@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>漫画书架</title>
+<link rel="icon" href="app.ico" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ==================== 书架 ==================== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📚</span>
+      <h1>漫画书架</h1>
+      <span class="tagline">PDF / 图片文件夹 → 可翻页的漫画书</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-import" class="btn btn-primary">＋ 导入漫画</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="lan-hint" class="lan-hint" hidden></div>
+    <div id="shelf" class="shelf"></div>
+
+    <div id="empty" class="empty" hidden>
+      <div class="empty-icon">📖</div>
+      <h2>书架还是空的</h2>
+      <p>把一个 PDF、一批图片，或者<b>整个文件夹</b>拖进这个窗口，<br />就能像翻书一样看。</p>
+      <div class="empty-actions">
+        <button id="btn-import-2" class="btn btn-primary">＋ 导入漫画</button>
+      </div>
+      <p class="tiny">文件夹会按文件名顺序（2.png → 10.png → 11.png）排成一本漫画，<br />子文件夹按名字顺序接在后面。</p>
+    </div>
+  </main>
+
+  <!-- ==================== 导入方式选择 ==================== -->
+  <div id="chooser" class="overlay" hidden>
+    <div class="dialog">
+      <h3>导入漫画</h3>
+      <p class="muted">选一种方式</p>
+      <div class="chooser-list">
+        <button id="ch-dir" class="chooser-item">
+          <b>文件夹</b>
+          <span>整个文件夹按名字顺序排成一本漫画，支持子文件夹（按章节）</span>
+        </button>
+        <button id="ch-path" class="chooser-item">
+          <b>本机路径</b>
+          <span>粘贴文件夹路径直接读磁盘，不必上传，几百张图也很快</span>
+        </button>
+        <button id="ch-files" class="chooser-item">
+          <b>文件</b>
+          <span>一个 PDF，或者多选一批图片</span>
+        </button>
+      </div>
+      <div class="dialog-actions">
+        <button id="ch-cancel" class="btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 阅读器 ==================== -->
+  <div id="reader" class="reader" hidden>
+    <div id="stage" class="stage">
+      <div id="canvas" class="canvas">
+        <div id="page-cur" class="page"><img id="img-cur" alt="" draggable="false" /></div>
+        <div id="page-next" class="page"><img id="img-next" alt="" draggable="false" /></div>
+      </div>
+    </div>
+
+    <div id="chrome-top" class="chrome chrome-top">
+      <button id="btn-back" class="btn btn-ghost">← 书架</button>
+      <div id="reader-title" class="reader-title"></div>
+      <div id="reader-counter" class="reader-counter">1 / 1</div>
+    </div>
+
+    <div id="chrome-bottom" class="chrome chrome-bottom">
+      <input id="slider" class="slider" type="range" min="1" max="1" value="1" />
+      <div class="chrome-row">
+        <span id="page-label" class="muted"></span>
+        <div class="spacer"></div>
+        <button id="btn-rtl" class="btn btn-ghost">从右往左</button>
+        <button id="btn-anim" class="btn btn-ghost">翻页动画：开</button>
+        <button id="btn-fit" class="btn btn-ghost">适应窗口</button>
+        <span class="hint">← → 翻页 · 双击放大 · Esc 返回</span>
+      </div>
+    </div>
+
+    <div id="zoom-badge" class="zoom-badge" hidden>100%</div>
+  </div>
+
+  <!-- ==================== 进度 / 提示 ==================== -->
+  <div id="overlay" class="overlay" hidden>
+    <div class="dialog">
+      <h3 id="dlg-title">正在导入</h3>
+      <p id="dlg-text" class="muted"></p>
+      <div class="progress"><div id="dlg-bar" class="progress-bar"></div></div>
+      <div class="dialog-actions">
+        <button id="dlg-close" class="btn" hidden>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="menu" class="menu" hidden></div>
+  <div id="drop" class="drop" hidden><div class="drop-inner">松开鼠标，导入这些文件 / 文件夹</div></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <input id="file-input" type="file" accept="application/pdf,image/*" multiple hidden />
+  <input id="dir-input" type="file" webkitdirectory directory multiple hidden />
+
+<script src="app.js"></script>
+</body>
+</html>

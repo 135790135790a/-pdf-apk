@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标底色：取自原图背景，已抹平为纯色，和前景无缝衔接 -->
+    <color name="ic_launcher_background">#FDFDFB</color>
+</resources>

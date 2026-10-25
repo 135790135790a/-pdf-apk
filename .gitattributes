@@ -1,0 +1,13 @@
+# Windows 批处理必须是 CRLF，否则 goto/代码块会乱（v1.0 踩过这个坑）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 脚本保持 LF
+gradlew text eol=lf
+*.sh text eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.apk binary
+*.jar binary
