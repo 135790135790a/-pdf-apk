@@ -9,28 +9,37 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,7 +53,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -54,6 +66,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -120,6 +136,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
     )
     var chromeVisible by remember { mutableStateOf(true) }
     var zoomedIn by remember { mutableStateOf(false) }
+    var showJumpDialog by remember { mutableStateOf(false) }
 
     ImmersiveMode()
 
@@ -200,12 +217,22 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    text = "${pager.currentPage + 1} / $pageCount",
-                    color = Color.White.copy(alpha = 0.8f),
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
+                // 页码做成可点的按钮：点它就能输入页码直接跳过去
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.14f))
+                        .clickable { showJumpDialog = true }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "${pager.currentPage + 1} / $pageCount",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
             }
         }
 
@@ -239,6 +266,9 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                         color = Color.White.copy(alpha = 0.75f)
                     )
                     Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { showJumpDialog = true }) {
+                        Text("跳页", color = MaterialTheme.colorScheme.primary)
+                    }
                     TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
                         Text(
                             text = if (book.rtl) "改为从左往右" else "改为从右往左",
@@ -248,6 +278,17 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                 }
             }
         }
+    }
+    if (showJumpDialog) {
+        PageJumpDialog(
+            pageCount = pageCount,
+            currentPage = pager.currentPage,
+            onDismiss = { showJumpDialog = false },
+            onJump = { target ->
+                showJumpDialog = false
+                goTo(target)
+            }
+        )
     }
 }
 
@@ -374,4 +415,96 @@ private fun Context.findActivity(): Activity? {
         current = current.baseContext
     }
     return null
+}
+
+/**
+ * 跳页对话框：输入页码直接跳到那一页。
+ *
+ * 底部滑杆在几百页的书里很难精确拖到某一页，所以再加一个能直接输数字的入口：
+ * 顶部的页码按钮和底部的「跳页」按钮都会打开它。
+ */
+@Composable
+private fun PageJumpDialog(
+    pageCount: Int,
+    currentPage: Int,
+    onDismiss: () -> Unit,
+    onJump: (Int) -> Unit
+) {
+    val initial = (currentPage + 1).toString()
+    var field by remember {
+        mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length)))
+    }
+    var error by remember { mutableStateOf<String?>(null) }
+    val focusRequester = remember { FocusRequester() }
+
+    fun submit() {
+        val n = field.text.trim().toIntOrNull()
+        if (n == null || n < 1 || n > pageCount) {
+            error = "请输入 1 – $pageCount 之间的页码"
+            return
+        }
+        onJump(n - 1)
+    }
+
+    // 弹出就把光标放进输入框，并且全选已有页码，直接打字即可替换
+    LaunchedEffect(Unit) {
+        runCatching { focusRequester.requestFocus() }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("跳转到指定页") },
+        text = {
+            Column {
+                Text(
+                    text = "共 $pageCount 页。输入页码后点「跳转」，或按键盘上的「完成」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { value ->
+                        val digits = value.text.filter { it.isDigit() }.take(6)
+                        field = TextFieldValue(digits, TextRange(digits.length))
+                        error = null
+                    },
+                    singleLine = true,
+                    isError = error != null,
+                    label = { Text("页码（1 – $pageCount）") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                )
+                val err = error
+                if (err != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onJump(0) }) { Text("第 1 页") }
+                    if (pageCount > 2) {
+                        TextButton(onClick = { onJump(pageCount / 2) }) { Text("中间") }
+                    }
+                    TextButton(onClick = { onJump(pageCount - 1) }) { Text("最后一页") }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { submit() }) { Text("跳转") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
