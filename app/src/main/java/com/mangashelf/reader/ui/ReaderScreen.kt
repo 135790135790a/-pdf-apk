@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -18,8 +19,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,6 +30,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +40,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -41,6 +48,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -137,6 +145,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
     var chromeVisible by remember { mutableStateOf(true) }
     var zoomedIn by remember { mutableStateOf(false) }
     var showJumpDialog by remember { mutableStateOf(false) }
+    var showPagePicker by remember { mutableStateOf(false) }
 
     ImmersiveMode()
 
@@ -224,7 +233,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                         .padding(end = 6.dp)
                         .clip(RoundedCornerShape(50))
                         .background(Color.White.copy(alpha = 0.14f))
-                        .clickable { showJumpDialog = true }
+                        .clickable { showPagePicker = true }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
@@ -266,7 +275,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                         color = Color.White.copy(alpha = 0.75f)
                     )
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { showJumpDialog = true }) {
+                    TextButton(onClick = { showPagePicker = true }) {
                         Text("跳页", color = MaterialTheme.colorScheme.primary)
                     }
                     TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
@@ -286,6 +295,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
             onDismiss = { showJumpDialog = false },
             onJump = { target ->
                 showJumpDialog = false
+                showPagePicker = false
                 goTo(target)
             }
         )
@@ -507,4 +517,125 @@ private fun PageJumpDialog(
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+/**
+ * 缩略图选页：滑一排小图，点哪页跳哪页。
+ *
+ * 用 LazyVerticalGrid 只渲染可见的格子，几百页也不会一次解码全部图片；
+ * Coil 会按格子尺寸降采样解码，不会把 1600px 的原图塞进内存。
+ * 打开时自动滚到当前页附近，当前页用橙色描边标出来。
+ */
+@Composable
+private fun PagePicker(
+    pages: List<String>,
+    currentPage: Int,
+    onDismiss: () -> Unit,
+    onPick: (Int) -> Unit,
+    onTypePage: () -> Unit
+) {
+    val gridState = rememberLazyGridState()
+
+    LaunchedEffect(Unit) {
+        // 留两页上下文，让人知道自己读到哪了
+        runCatching { gridState.scrollToItem((currentPage - 2).coerceAtLeast(0)) }
+    }
+
+    Surface(
+        // 空 pointerInput 是为了吃掉空白处的手势，避免穿透到下面的翻页手势
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) { },
+        color = Color(0xFF0E0E12)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White)
+                }
+                Text(
+                    text = "选择页面（共 ${pages.size} 页）",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onTypePage) {
+                    Text("输入页码", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 84.dp),
+                state = gridState,
+                contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(pages.size) { index ->
+                    PageThumb(
+                        path = pages[index],
+                        index = index,
+                        isCurrent = index == currentPage,
+                        onClick = { onPick(index) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PageThumb(
+    path: String,
+    index: Int,
+    isCurrent: Boolean,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(0.7f)
+            .clip(shape)
+            .background(Color(0xFF1A1A20))
+            .then(
+                if (isCurrent) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
+                } else {
+                    Modifier
+                }
+            )
+            .clickable { onClick() }
+    ) {
+        AsyncImage(
+            model = File(path),
+            contentDescription = "第 ${index + 1} 页",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+        Text(
+            text = "${index + 1}",
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(3.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xCC000000))
+                .padding(horizontal = 4.dp, vertical = 1.dp)
+        )
+    }
 }
