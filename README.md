@@ -2,7 +2,7 @@
 
 一个把 **PDF / 图片** 变成可翻页漫画书的安卓 App。
 
-> **APK 已经编译好，可以直接装：`漫画书架-v1.4.2-release.apk`**（6.77 MB，在本目录里）。
+> **APK 已经编译好，可以直接装：`漫画书架-v1.4.1-release.apk`**（6.77 MB，在本目录里）。
 > 详见 [第 10 节](#10-在手机上用)。
 >
 > 另外还有两样东西：
@@ -211,7 +211,7 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 
 ### 路 A：装 APK（已编译好，推荐）
 
-**`漫画书架-v1.4.2-release.apk`（6.77 MB）就在这个目录里**，直接装：
+**`漫画书架-v1.4.1-release.apk`（6.77 MB）就在这个目录里**，直接装：
 
 1. 手机「设置 → 安全」里允许安装未知来源应用（不同品牌位置略有差异，按提示授权即可）
 2. 把 APK 传到手机（数据线 / 微信文件传输 / QQ / 网盘都行）
@@ -226,7 +226,7 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.mangashelf.reader` |
-| 版本 | 1.4.2（versionCode 8） |
+| 版本 | 1.4.1（versionCode 8） |
 | 系统要求 | Android 7.0+（minSdk 24），targetSdk 34 |
 | 签名 | Android Debug 证书（个人自用没问题） |
 | 大小 | 6.77 MB（release，未开 R8；见下方说明） |
