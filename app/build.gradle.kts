@@ -29,8 +29,8 @@ android {
         applicationId = "com.mangashelf.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.4.1"
+        versionCode = 8
+        versionName = "1.4.2"
     }
 
     buildTypes {

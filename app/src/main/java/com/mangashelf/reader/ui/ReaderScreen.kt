@@ -287,6 +287,18 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                 }
             }
         }
+        if (showPagePicker) {
+            PagePicker(
+                pages = pages,
+                currentPage = pager.currentPage,
+                onDismiss = { showPagePicker = false },
+                onPick = { target ->
+                    showPagePicker = false
+                    goTo(target)
+                },
+                onTypePage = { showJumpDialog = true }
+            )
+        }
     }
     if (showJumpDialog) {
         PageJumpDialog(
@@ -534,18 +546,16 @@ private fun PagePicker(
     onPick: (Int) -> Unit,
     onTypePage: () -> Unit
 ) {
-    val gridState = rememberLazyGridState()
-
-    LaunchedEffect(Unit) {
-        // 留两页上下文，让人知道自己读到哪了
-        runCatching { gridState.scrollToItem((currentPage - 2).coerceAtLeast(0)) }
-    }
+    // 打开时直接把当前页滚进视线（往上留两页上下文）。
+    // 用 initialFirstVisibleItemIndex 而不是 LaunchedEffect：首帧还没完成布局时
+    // scrollToItem 可能被取消，表现就是"每次打开都从第 1 页开始"。
+    val gridState = rememberLazyGridState(
+        initialFirstVisibleItemIndex = (currentPage - 2).coerceAtLeast(0)
+    )
 
     Surface(
-        // 空 pointerInput 是为了吃掉空白处的手势，避免穿透到下面的翻页手势
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) { },
+        // 这一层铺满整个阅读器：命中测试会停在最上层，下面的翻页手势自然收不到
+        modifier = Modifier.fillMaxSize(),
         color = Color(0xFF0E0E12)
     ) {
         Column(
@@ -582,7 +592,9 @@ private fun PagePicker(
                 contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxSize()
+                // 必须用 weight(1f) 而不是 fillMaxSize()：在 Column 里 fillMaxSize 会让
+                // 网格撑满整个父高度，导致它超出屏幕、最后一行点不到
+                modifier = Modifier.weight(1f)
             ) {
                 items(pages.size) { index ->
                     PageThumb(
