@@ -2,6 +2,7 @@ package com.mangashelf.reader.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.withContext
 
 class BookRepository(
@@ -10,9 +11,13 @@ class BookRepository(
     val storage: ComicStorage
 ) {
 
-    fun observeBooks() = dao.observeAll()
+    /**
+     * 书架列表。查询出错（数据库文件异常、磁盘 IO 错误）时吞掉异常返回空列表，
+     * 让 UI 显示"空书架"而不是整页崩溃——重启通常就恢复了。
+     */
+    fun observeBooks(): Flow<List<Book>> = dao.observeAll().catch { emit(emptyList()) }
 
-    fun observeBook(id: Long) = dao.observeOne(id)
+    fun observeBook(id: Long): Flow<Book?> = dao.observeOne(id).catch { emit(null) }
 
     suspend fun insert(book: Book): Long = dao.insert(book)
 

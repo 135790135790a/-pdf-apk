@@ -69,6 +69,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -78,6 +79,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -87,6 +89,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.ui.theme.ComicScrim
@@ -177,7 +180,9 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
             userScrollEnabled = !zoomedIn
         ) { index ->
             ZoomablePage(
-                path = pages[index],
+                // 一本书的页数可能在别处被导入/取消改动，索引越界时给空路径让 Coil 走错误占位，
+                // 直接 pages[index] 会抛 IndexOutOfBounds 把整个阅读器带崩
+                path = pages.getOrNull(index).orEmpty(),
                 isCurrent = index == pager.currentPage,
                 onZoomChanged = { zoomed -> if (index == pager.currentPage) zoomedIn = zoomed },
                 onTapAt = { fraction ->
@@ -388,7 +393,7 @@ private fun ZoomablePage(
             },
         contentAlignment = Alignment.Center
     ) {
-        AsyncImage(
+        SubcomposeAsyncImage(
             model = File(path),
             contentDescription = null,
             contentScale = ContentScale.Fit,
@@ -399,7 +404,21 @@ private fun ZoomablePage(
                     scaleY = scale
                     translationX = offset.x
                     translationY = offset.y
+                },
+            // 文件被删 / 格式坏 / 解码失败：显示占位，不抛异常、不白屏
+            error = {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "这一页无法显示\n文件可能已被删除或损坏",
+                        color = Color.White.copy(alpha = 0.55f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
                 }
+            }
         )
     }
 }
@@ -636,7 +655,9 @@ private fun PageThumb(
             model = File(path),
             contentDescription = "第 ${index + 1} 页",
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            // 缩略图读不出来就留一个深灰块，不要让网格里出现异常
+            error = ColorPainter(Color(0xFF2A2A32))
         )
         Text(
             text = "${index + 1}",

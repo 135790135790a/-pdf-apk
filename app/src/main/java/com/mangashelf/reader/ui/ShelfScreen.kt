@@ -55,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -518,7 +519,9 @@ private fun BookCard(
                 model = File(coverPath),
                 contentDescription = book.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                // 封面文件被清掉（比如用户清了 App 存储）时给个纯色块，别闪白也别崩
+                error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
             )
             if (book.lastPage > 0) {
                 Box(

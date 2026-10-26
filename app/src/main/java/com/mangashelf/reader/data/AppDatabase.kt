@@ -18,6 +18,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pageDao(): PageDao
 
     companion object {
+        const val DB_NAME = "mangashelf.db"
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -25,11 +27,21 @@ abstract class AppDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
-                "mangashelf.db"
+                DB_NAME
             )
                 .addMigrations(MIGRATION_1_2)
                 .build()
                 .also { instance = it }
+        }
+
+        /**
+         * 释放当前实例。数据库文件损坏、需要删库重建时调用——
+         * 旧连接不关，新库会被它锁住或者继续用坏文件。
+         */
+        @Synchronized
+        fun reset() {
+            runCatching { instance?.close() }
+            instance = null
         }
     }
 }
