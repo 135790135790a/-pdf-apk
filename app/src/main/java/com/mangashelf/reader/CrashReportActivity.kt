@@ -26,7 +26,10 @@ class CrashReportActivity : Activity() {
 
     companion object {
         const val EXTRA_TEXT = "crash_text"
+        private const val REQUEST_SAVE_ZIP = 7001
     }
+
+    private var pendingZip: java.io.File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,6 +90,25 @@ class CrashReportActivity : Activity() {
             setOnClickListener { Process.killProcess(Process.myPid()) }
         }
 
+        val exportButton = Button(this).apply {
+            text = "导出诊断包（推荐）"
+            setOnClickListener {
+                val zip = com.mangashelf.reader.data.Diagnostics.export(this@CrashReportActivity)
+                if (zip == null) {
+                    this.text = "导出失败"
+                } else {
+                    pendingZip = zip
+                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_TITLE, zip.name)
+                    }
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(intent, REQUEST_SAVE_ZIP)
+                }
+            }
+        }
+
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(copyButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -96,8 +118,29 @@ class CrashReportActivity : Activity() {
         root.addView(title)
         root.addView(hint)
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(exportButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(buttons)
 
         setContentView(root)
+    }
+
+    @Deprecated("原生 Activity，未引入 androidx activity；API 34 上仍可用")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_SAVE_ZIP) return
+        val zip = pendingZip ?: return
+        pendingZip = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) return
+        val ok = runCatching {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                zip.inputStream().use { input -> input.copyTo(out) }
+            } ?: throw IllegalStateException("无法写入目标位置")
+        }.isSuccess
+        android.widget.Toast.makeText(
+            this,
+            if (ok) "诊断包已保存" else "保存失败",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
     }
 }

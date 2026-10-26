@@ -51,6 +51,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,11 +70,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.Diagnostics
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.ui.theme.ComicScrim
 import com.mangashelf.reader.ui.theme.ThemeMode
 import java.io.File
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -84,6 +88,7 @@ fun ShelfScreen(
 ) {
 
     val context = LocalContext.current
+    val app = context.applicationContext as MangaShelfApp
     val viewModel: ShelfViewModel = viewModel()
     val books by viewModel.books.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
@@ -94,6 +99,34 @@ fun ShelfScreen(
     var showThemeMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
     var pageOrderBookId by remember { mutableStateOf<Long?>(null) }
+    var pendingZip by remember { mutableStateOf<File?>(null) }
+    val safeMode = app.safeMode
+
+    // 书架界面稳定显示 1.2 秒 → 本轮启动算健康。
+    // 不能等"有书"才标记：新装用户书架是空的，否则会被启动守卫误判成连续启动失败而进安全模式。
+    LaunchedEffect(Unit) {
+        delay(1200)
+        app.markShelfHealthy()
+    }
+
+    // 安全模式下导出诊断包：先在本应用私有目录生成，再让用户选保存位置
+    val exportZip = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val zip = pendingZip
+        if (uri != null && zip != null && zip.exists()) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    zip.inputStream().use { input -> input.copyTo(out) }
+                }
+            }.onSuccess {
+                Toast.makeText(context, "诊断包已保存", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(context, "保存失败：" + (it.message ?: "未知错误"), Toast.LENGTH_LONG).show()
+            }
+        }
+        pendingZip = null
+    }
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importPdf(uri)
@@ -261,11 +294,27 @@ fun ShelfScreen(
                         BookCard(
                             book = book,
                             coverPath = viewModel.coverPath(book),
+                            showCover = !safeMode,
                             onClick = { onOpenBook(book.id) },
                             onLongClick = { optionsBookId = book.id }
                         )
                     }
                 }
+            }
+
+            if (safeMode) {
+                SafeModeBanner(
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    onExport = {
+                        val zip = Diagnostics.export(context)
+                        if (zip == null) {
+                            Toast.makeText(context, "导出失败：磁盘空间不足或无写权限", Toast.LENGTH_LONG).show()
+                        } else {
+                            pendingZip = zip
+                            exportZip.launch(zip.name)
+                        }
+                    }
+                )
             }
         }
     }
@@ -549,6 +598,7 @@ private fun EmptyShelf(
 private fun BookCard(
     book: Book,
     coverPath: String,
+    showCover: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -567,7 +617,7 @@ private fun BookCard(
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             AsyncImage(
-                model = File(coverPath),
+                model = if (showCover) File(coverPath) else null,
                 contentDescription = book.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -753,4 +803,25 @@ private fun PageOrderDialog(
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+@Composable
+private fun SafeModeBanner(modifier: Modifier = Modifier, onExport: () -> Unit) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "安全模式：封面已关闭、图片缓存已清理",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onExport) {
+            Text("导出诊断包", color = MaterialTheme.colorScheme.primary)
+        }
+    }
 }

@@ -11,6 +11,7 @@ import coil.memory.MemoryCache
 import com.mangashelf.reader.data.AppDatabase
 import com.mangashelf.reader.data.BookRepository
 import com.mangashelf.reader.data.ComicStorage
+import com.mangashelf.reader.data.StartupGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,10 +40,20 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
 
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** 本次进程是否处于安全模式（连续启动失败后的降级形态，见 [StartupGuard]） */
+    val safeMode: Boolean
+        get() = StartupGuard.safeMode
+
     override fun onCreate() {
         super.onCreate()
         installCrashHandler()
+        StartupGuard.onAppStart(this)
         healDatabaseIfCorrupt()
+    }
+
+    /** 书架成功显示出书时调用，表示这次启动是健康的 */
+    fun markShelfHealthy() {
+        StartupGuard.markHealthy(this)
     }
 
     private fun createRepository(): BookRepository {
