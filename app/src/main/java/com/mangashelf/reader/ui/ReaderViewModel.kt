@@ -18,7 +18,13 @@ class ReaderViewModel(
     val book: StateFlow<Book?> = repo.observeBook(bookId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    fun pagePaths(book: Book): List<String> = repo.pagePaths(book)
+    /**
+     * 按当前页序取页面路径。
+     *
+     * 走的是 `pages` 表（顺序间接层），不是"按 page_001.jpg 猜顺序"——
+     * 这样在书设置里改了页序排序后，翻页顺序立刻是对的。
+     */
+    suspend fun loadPages(book: Book): List<String> = repo.loadPagePaths(book)
 
     fun saveProgress(page: Int) {
         viewModelScope.launch { repo.saveProgress(bookId, page) }

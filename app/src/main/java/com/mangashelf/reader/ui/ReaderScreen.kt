@@ -56,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -124,9 +125,25 @@ fun ReaderScreen(bookId: Long, onBack: () -> Unit) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> Unit) {
-    val pages = remember(book.folder, book.pageCount) { viewModel.pagePaths(book) }
+    // 页序存在数据库里（pages 表），要异步读；null = 还在加载
+    val pages by produceState<List<String>?>(initialValue = null, book.id, book.pageCount) {
+        value = viewModel.loadPages(book)
+    }
 
-    if (pages.isEmpty()) {
+    if (pages == null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        }
+        return
+    }
+
+    val pageList = pages.orEmpty()
+    if (pageList.isEmpty()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -138,7 +155,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
         return
     }
 
-    val pageCount = pages.size
+    val pageCount = pageList.size
     val scope = rememberCoroutineScope()
     val pager = rememberPagerState(
         initialPage = book.lastPage.coerceIn(0, pageCount - 1),
@@ -181,7 +198,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
             ZoomablePage(
                 // 一本书的页数可能在别处被导入/取消改动，索引越界时给空路径让 Coil 走错误占位，
                 // 直接 pages[index] 会抛 IndexOutOfBounds 把整个阅读器带崩
-                path = pages.getOrNull(index).orEmpty(),
+                path = pageList.getOrNull(index).orEmpty(),
                 isCurrent = index == pager.currentPage,
                 onZoomChanged = { zoomed -> if (index == pager.currentPage) zoomedIn = zoomed },
                 onTapAt = { fraction ->
@@ -297,7 +314,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
         }
         if (showPagePicker) {
             PagePicker(
-                pages = pages,
+                pages = pageList,
                 currentPage = pager.currentPage,
                 onDismiss = { showPagePicker = false },
                 onPick = { target ->

@@ -2,6 +2,8 @@ package com.mangashelf.reader.importer
 
 import android.content.Context
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
+import com.mangashelf.reader.data.PageSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -20,26 +22,35 @@ object ImageImporter {
         uris: List<Uri>,
         destDir: File,
         onProgress: (done: Int, total: Int) -> Unit
-    ): Int = withContext(Dispatchers.IO) {
+    ): List<PageSource> = withContext(Dispatchers.IO) {
         destDir.mkdirs()
 
         val ordered = uris.sortedBy { uri ->
             FileNames.displayName(context, uri)?.lowercase(Locale.ROOT).orEmpty()
         }
 
-        var saved = 0
+        val out = ArrayList<PageSource>(ordered.size)
         ordered.forEachIndexed { index, uri ->
             val bitmap = runCatching { ImageCodec.load(context, uri) }.getOrNull()
             if (bitmap != null) {
+                val relPath = PageFileNaming.of(out.size)
                 try {
-                    ImageCodec.write(bitmap, File(destDir, PageFileNaming.of(saved)))
-                    saved++
+                    ImageCodec.write(bitmap, File(destDir, relPath))
+                    val doc = runCatching { DocumentFile.fromSingleUri(context, uri) }.getOrNull()
+                    out.add(
+                        PageSource(
+                            relPath = relPath,
+                            originName = FileNames.displayName(context, uri).orEmpty(),
+                            sizeBytes = runCatching { doc?.length() }.getOrNull() ?: 0L,
+                            modifiedAt = runCatching { doc?.lastModified() }.getOrNull() ?: 0L
+                        )
+                    )
                 } finally {
                     bitmap.recycle()
                 }
             }
             onProgress(index + 1, ordered.size)
         }
-        saved
+        out
     }
 }

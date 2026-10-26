@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.documentfile.provider.DocumentFile
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.PageSortMode
+import com.mangashelf.reader.data.PageSource
 import com.mangashelf.reader.importer.FileNames
 import com.mangashelf.reader.importer.FolderImporter
 import com.mangashelf.reader.importer.ImageImporter
@@ -217,21 +219,22 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     currentDir = null
-                    if (pages <= 0) {
+                    if (pages.isEmpty()) {
                         withContext(Dispatchers.IO) { dir.deleteRecursively() }
                         failed++
                         continue
                     }
 
-                    repo.insert(
+                    repo.insertBook(
                         Book(
                             title = child.name,
                             folder = folder,
-                            pageCount = pages,
+                            pageCount = pages.size,
                             sourceKey = child.key,
                             sourceTreeUri = child.treeUri.toString(),
                             sourceType = "IMAGE"
-                        )
+                        ),
+                        pages
                     )
                     imported++
                 }
@@ -303,12 +306,24 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repo.setRtl(book.id, !book.rtl) }
     }
 
+    /**
+     * 按新的页序规则重排这本书。
+     *
+     * 只改 `pages.idx`，不重命名、不移动文件——所以改错了再改回来也不会有损失。
+     */
+    fun reorderPages(book: Book, mode: PageSortMode, asc: Boolean) {
+        viewModelScope.launch {
+            runCatching { repo.applyPageOrder(book, mode, asc) }
+                .onFailure { _importState.value = ImportUiState.Failed(it.message ?: "重排页面失败") }
+        }
+    }
+
     private fun startImport(
         title: String,
         sourceKey: String? = null,
         sourceType: String = "FIXED",
         sourceTreeUri: String? = null,
-        work: suspend (File, (Int, Int) -> Unit) -> Int
+        work: suspend (File, (Int, Int) -> Unit) -> List<PageSource>
     ) {
         if (isBusy()) return
         importJob = viewModelScope.launch {
@@ -321,16 +336,17 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                         _importState.value = ImportUiState.Running(title, done, total)
                     }
                 }
-                if (pages <= 0) throw IllegalStateException("没有读到任何页面，请确认文件是否损坏")
-                repo.insert(
+                if (pages.isEmpty()) throw IllegalStateException("没有读到任何页面，请确认文件是否损坏")
+                repo.insertBook(
                     Book(
                         title = title,
                         folder = folder,
-                        pageCount = pages,
+                        pageCount = pages.size,
                         sourceKey = sourceKey,
                         sourceTreeUri = sourceTreeUri,
                         sourceType = sourceType
-                    )
+                    ),
+                    pages
                 )
                 _importState.value = ImportUiState.Idle
             } catch (t: Throwable) {

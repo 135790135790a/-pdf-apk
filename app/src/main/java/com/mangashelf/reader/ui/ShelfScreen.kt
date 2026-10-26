@@ -1,10 +1,12 @@
 package com.mangashelf.reader.ui
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,7 +43,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -66,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.ui.theme.ComicScrim
 import com.mangashelf.reader.ui.theme.ThemeMode
 import java.io.File
@@ -88,6 +93,7 @@ fun ShelfScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
+    var pageOrderBookId by remember { mutableStateOf<Long?>(null) }
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importPdf(uri)
@@ -469,9 +475,23 @@ fun ShelfScreen(
             onDismiss = { optionsBookId = null },
             onRename = { title -> viewModel.renameBook(optionsBook, title) },
             onToggleDirection = { viewModel.toggleDirection(optionsBook) },
+            onOpenPageOrder = { pageOrderBookId = optionsBook.id },
             onDelete = {
                 viewModel.deleteBook(optionsBook)
                 optionsBookId = null
+            }
+        )
+    }
+
+    val pageOrderBook = books.firstOrNull { it.id == pageOrderBookId }
+    if (pageOrderBook != null) {
+        PageOrderDialog(
+            book = pageOrderBook,
+            onDismiss = { pageOrderBookId = null },
+            onApply = { mode, asc ->
+                viewModel.reorderPages(pageOrderBook, mode, asc)
+                Toast.makeText(context, "已按「${mode.label}」重排 ${pageOrderBook.pageCount} 页", Toast.LENGTH_SHORT).show()
+                pageOrderBookId = null
             }
         )
     }
@@ -609,6 +629,7 @@ private fun BookOptionsDialog(
     onDismiss: () -> Unit,
     onRename: (String) -> Unit,
     onToggleDirection: () -> Unit,
+    onOpenPageOrder: () -> Unit,
     onDelete: () -> Unit
 ) {
     var title by remember(book.id) { mutableStateOf(book.title) }
@@ -635,6 +656,15 @@ private fun BookOptionsDialog(
                 TextButton(onClick = onToggleDirection) {
                     Text(if (book.rtl) "改为从左往右" else "改为从右往左")
                 }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "页序：${PageSortMode.fromStorage(book.sortMode).label}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(onClick = onOpenPageOrder) {
+                    Text("调整页面顺序")
+                }
                 TextButton(onClick = onDelete) {
                     Text("从书架删除", color = MaterialTheme.colorScheme.error)
                 }
@@ -648,6 +678,76 @@ private fun BookOptionsDialog(
                     onDismiss()
                 }
             ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+@Composable
+private fun PageOrderDialog(
+    book: Book,
+    onDismiss: () -> Unit,
+    onApply: (PageSortMode, Boolean) -> Unit
+) {
+    val current = PageSortMode.fromStorage(book.sortMode)
+    var mode by remember(book.id) { mutableStateOf(current) }
+    var asc by remember(book.id) { mutableStateOf(book.sortAsc) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("页面顺序") },
+        text = {
+            Column {
+                Text(
+                    "这本书的 ${book.pageCount} 页按什么排？只改顺序，不重命名文件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                PageSortMode.entries.forEach { m ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                mode = m
+                                asc = m.defaultAsc
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = mode == m, onClick = {
+                            mode = m
+                            asc = m.defaultAsc
+                        })
+                        Column {
+                            Text(m.label)
+                            Text(
+                                m.hint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(if (asc) "正序（小 → 大）" else "倒序（大 → 小）")
+                    Switch(
+                        checked = asc,
+                        onCheckedChange = { asc = it },
+                        enabled = mode != PageSortMode.FIXED
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onApply(mode, asc) }) { Text("应用") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import com.mangashelf.reader.data.PageSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -30,7 +31,7 @@ object FolderImporter {
         treeUri: Uri,
         destDir: File,
         onProgress: (done: Int, total: Int) -> Unit
-    ): Int = withContext(Dispatchers.IO) {
+    ): List<PageSource> = withContext(Dispatchers.IO) {
         destDir.mkdirs()
 
         val root = DocumentFile.fromTreeUri(context, treeUri)
@@ -47,24 +48,37 @@ object FolderImporter {
 
         val ordered = found.sortedWith(Comparator { a, b -> compareNatural(a.path, b.path) })
 
-        var saved = 0
+        val out = ArrayList<PageSource>(ordered.size)
         ordered.forEachIndexed { index, entry ->
             val bitmap = runCatching { ImageCodec.load(context, entry.uri) }.getOrNull()
             if (bitmap != null) {
+                val relPath = PageFileNaming.of(out.size)
                 try {
-                    ImageCodec.write(bitmap, File(destDir, PageFileNaming.of(saved)))
-                    saved++
+                    ImageCodec.write(bitmap, File(destDir, relPath))
+                    out.add(
+                        PageSource(
+                            relPath = relPath,
+                            originName = entry.path,
+                            sizeBytes = entry.size,
+                            modifiedAt = entry.modified
+                        )
+                    )
                 } finally {
                     bitmap.recycle()
                 }
             }
             onProgress(index + 1, ordered.size)
         }
-        if (saved == 0) throw IllegalStateException("这个文件夹里的图片都读不出来")
-        saved
+        if (out.isEmpty()) throw IllegalStateException("这个文件夹里的图片都读不出来")
+        out
     }
 
-    private class Entry(val path: String, val uri: Uri)
+    private class Entry(
+        val path: String,
+        val uri: Uri,
+        val size: Long,
+        val modified: Long
+    )
 
     /**
      * 父文件夹下的一个子文件夹 = 一本书（批量导入用）。
@@ -110,7 +124,14 @@ object FolderImporter {
             if (child.isDirectory) {
                 collect(child, "$prefix$name/", out, depth + 1)
             } else if (child.isFile && isImage(name)) {
-                out.add(Entry("$prefix$name", child.uri))
+                out.add(
+                    Entry(
+                        path = "$prefix$name",
+                        uri = child.uri,
+                        size = runCatching { child.length() }.getOrDefault(0L),
+                        modified = runCatching { child.lastModified() }.getOrDefault(0L)
+                    )
+                )
             }
         }
     }

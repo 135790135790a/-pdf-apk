@@ -4,6 +4,44 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v2 → v3：给 pages 加 originName（原始文件名），供「按名称排序」。
+ *
+ * 同样用重建表：`ALTER TABLE ... ADD COLUMN originName TEXT NOT NULL DEFAULT ''`
+ * 会在 sqlite_master 里留下 DEFAULT 子句，和 Room 期望的结构对不上。
+ * pages 的行数等于总页数（几千行），重建一次是毫秒级，不值得冒 schema 不一致的风险。
+ */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `pages_new` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `bookId` INTEGER NOT NULL,
+                `idx` INTEGER NOT NULL,
+                `relPath` TEXT NOT NULL,
+                `originName` TEXT NOT NULL,
+                `sizeBytes` INTEGER NOT NULL,
+                `modifiedAt` INTEGER NOT NULL,
+                `manualPos` INTEGER,
+                FOREIGN KEY(`bookId`) REFERENCES `books`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            """
+            INSERT INTO `pages_new`
+                (`id`, `bookId`, `idx`, `relPath`, `originName`, `sizeBytes`, `modifiedAt`, `manualPos`)
+            SELECT `id`, `bookId`, `idx`, `relPath`, '', `sizeBytes`, `modifiedAt`, `manualPos`
+            FROM `pages`
+            """.trimIndent()
+        )
+        database.execSQL("DROP TABLE `pages`")
+        database.execSQL("ALTER TABLE `pages_new` RENAME TO `pages`")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_pages_bookId` ON `pages` (`bookId`)")
+    }
+}
+
+/**
  * v1 → v2：为"批量导入 + 每本书独立排序"打地基。
  *
  * 原则：**绝不丢数据、绝不重排老页序**。

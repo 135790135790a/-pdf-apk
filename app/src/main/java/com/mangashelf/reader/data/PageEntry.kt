@@ -41,6 +41,12 @@ data class PageEntry(
     val idx: Int,
     /** 导入时的原始相对路径，用于"重新排序后反查是哪一张图" */
     val relPath: String,
+    /**
+     * 原始文件名（导入时在源文件夹里的名字，如 `第012话_03.jpg`）。
+     * 落盘后文件统一叫 `page_NNN.jpg`，原始名字只留在这里——
+     * 「按名称排序」用的就是它，否则只能按落盘序号排，等于没排。
+     */
+    val originName: String = "",
     /** 原始文件大小，供"按大小排序" */
     val sizeBytes: Long = 0L,
     /** 原始文件修改时间，供"按时间排序" */
