@@ -27,11 +27,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -72,8 +76,10 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
     val viewModel: ShelfViewModel = viewModel()
     val books by viewModel.books.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
+    val order by viewModel.order.collectAsStateWithLifecycle()
 
     var showImportDialog by remember { mutableStateOf(false) }
+    var showSortMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -133,7 +139,55 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
-                )
+                ),
+                actions = {
+                    Box {
+                        TextButton(onClick = { showSortMenu = true }) {
+                            Text("排序", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            ShelfSort.entries.forEach { sort ->
+                                val selected = order.sort == sort
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = sort.label + if (selected) {
+                                                if (order.asc) "  ↑ 正序" else "  ↓ 倒序"
+                                            } else {
+                                                ""
+                                            },
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
+                                        )
+                                    },
+                                    leadingIcon = if (selected) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        viewModel.setSort(sort)
+                                        showSortMenu = false
+                                    }
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("只切换正序 / 倒序") },
+                                onClick = {
+                                    viewModel.setSort(order.sort)
+                                    showSortMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
             )
         },
         floatingActionButton = {

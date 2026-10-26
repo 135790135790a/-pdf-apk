@@ -1,6 +1,7 @@
 package com.mangashelf.reader.ui
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,6 +30,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private const val KEY_ORDER = "order"
 
 sealed interface ImportUiState {
     data object Idle : ImportUiState
@@ -62,8 +66,17 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val repo = (application as MangaShelfApp).repository
     private val context = application.applicationContext
 
-    val books: StateFlow<List<Book>> = repo.observeBooks()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val prefs = application.getSharedPreferences("shelf", Context.MODE_PRIVATE)
+
+    private val _order = MutableStateFlow(
+        ShelfOrder.fromStorage(prefs.getString(KEY_ORDER, null))
+    )
+    /** 当前书架排序（持久化，重进 App 保持） */
+    val order: StateFlow<ShelfOrder> = _order.asStateFlow()
+
+    val books: StateFlow<List<Book>> = combine(repo.observeBooks(), _order) { list, order ->
+        order.apply(list)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
@@ -72,6 +85,21 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val paused = MutableStateFlow(false)
 
     fun coverPath(book: Book): String = repo.coverPath(book)
+
+    /**
+     * 切到某个排序：点的是当前排序就翻转方向，点别的就换成它并重置为该排序的默认方向。
+     * 结果立刻存盘，重进 App、杀进程都不会丢。
+     */
+    fun setSort(sort: ShelfSort) {
+        val current = _order.value
+        val next = if (current.sort == sort) {
+            current.copy(asc = !current.asc)
+        } else {
+            ShelfOrder(sort, sort.defaultAsc)
+        }
+        _order.value = next
+        prefs.edit().putString(KEY_ORDER, next.storageKey()).apply()
+    }
 
     // ------------------------------------------------------------------
     // 单本导入
