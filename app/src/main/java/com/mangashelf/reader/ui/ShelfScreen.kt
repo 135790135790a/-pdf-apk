@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -99,9 +100,25 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
         }
     }
 
+    // 批量导入：选父文件夹，每个子文件夹 = 一本书
+    val batchPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            viewModel.importBatch(uri)
+        }
+    }
+
     val launchPdf = { pdfPicker.launch(arrayOf("application/pdf")) }
     val launchImages = { imagePicker.launch(arrayOf("image/*")) }
     val launchFolder = { folderPicker.launch(null) }
+    val launchBatch = { batchPicker.launch(null) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -183,6 +200,16 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
                         Text("选择文件夹（整本成一本书）")
                     }
                     Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            showImportDialog = false
+                            launchBatch()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("批量导入（父文件夹里的每一本）")
+                    }
+                    Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = {
                             showImportDialog = false
@@ -238,6 +265,100 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
                     }
                 },
                 confirmButton = { }
+            )
+        }
+
+        is ImportUiState.Batch -> {
+            AlertDialog(
+                onDismissRequest = { },
+                title = {
+                    Text(
+                        when {
+                            !state.paused -> "正在批量导入"
+                            state.done < state.totalPages -> "正在暂停…"
+                            else -> "已暂停"
+                        }
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "第 ${state.index} / ${state.total} 本",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(state.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(12.dp))
+                        if (state.totalPages > 0) {
+                            LinearProgressIndicator(
+                                progress = { state.done.toFloat() / state.totalPages.coerceAtLeast(1) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "${state.done} / ${state.totalPages} 页",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Text(
+                                text = "正在解析…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (state.paused) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = if (state.done < state.totalPages) {
+                                    "当前这本导完就停，已导入的书都在书架上。"
+                                } else {
+                                    "点「继续」接着导入。已导入的书都在书架上，不会丢。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (state.skipped > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "已跳过 ${state.skipped} 本（之前导过）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Row {
+                        TextButton(
+                            onClick = {
+                                if (state.paused) viewModel.resumeImport() else viewModel.pauseImport()
+                            }
+                        ) {
+                            Text(if (state.paused) "继续" else "暂停")
+                        }
+                        TextButton(onClick = { viewModel.cancelImport() }) {
+                            Text("取消", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            )
+        }
+
+        is ImportUiState.Finished -> {
+            val parts = buildList {
+                add("成功导入 ${state.imported} 本")
+                if (state.skipped > 0) add("跳过 ${state.skipped} 本（已存在）")
+                if (state.failed > 0) add("失败 ${state.failed} 本")
+            }
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissImportDialog() },
+                title = { Text(if (state.cancelled) "已取消" else "批量导入完成") },
+                text = { Text(parts.joinToString("，")) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.dismissImportDialog() }) { Text("好") }
+                }
             )
         }
 

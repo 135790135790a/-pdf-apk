@@ -16,6 +16,9 @@ class BookRepository(
 
     suspend fun insert(book: Book): Long = dao.insert(book)
 
+    /** 批量导入前判断"这个文件夹是不是已经导过"（断点续传） */
+    suspend fun findBySourceKey(key: String): Book? = dao.findBySourceKey(key)
+
     suspend fun delete(book: Book) = withContext(Dispatchers.IO) {
         // 显式删 pages，不依赖外键级联（部分设备/配置下 foreign_keys 未必生效）
         pageDao.deleteByBook(book.id)

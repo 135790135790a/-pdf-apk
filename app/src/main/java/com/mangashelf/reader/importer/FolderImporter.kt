@@ -2,6 +2,7 @@ package com.mangashelf.reader.importer
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -64,6 +65,41 @@ object FolderImporter {
     }
 
     private class Entry(val path: String, val uri: Uri)
+
+    /**
+     * 父文件夹下的一个子文件夹 = 一本书（批量导入用）。
+     *
+     * @param name   子文件夹名（即书名）
+     * @param treeUri 可以直接交给 [import] 的 tree URI
+     * @param key    稳定的去重键（DocumentId，如 `primary:Comics/OP1`），换机器/重装后仍一致
+     */
+    class ChildFolder(val name: String, val treeUri: Uri, val key: String)
+
+    /**
+     * 列出父文件夹下所有**直接子文件夹**，按名称自然排序。
+     *
+     * 这正是「海贼王 1-100 卷」那种结构：父目录里每个子目录是一本。
+     * 父目录里直接散放的图片不在这里返回——那种情况仍走单本 [import]。
+     */
+    fun listChildFolders(context: Context, rootTreeUri: Uri): List<ChildFolder> {
+        val root = DocumentFile.fromTreeUri(context, rootTreeUri) ?: return emptyList()
+        val authority = rootTreeUri.authority ?: return emptyList()
+        val children = runCatching { root.listFiles() }.getOrNull() ?: return emptyList()
+
+        val out = ArrayList<ChildFolder>(32)
+        for (child in children) {
+            if (!child.isDirectory) continue
+            val name = child.name?.trim().orEmpty()
+            if (name.isEmpty() || name.startsWith(".")) continue
+            val key = runCatching { DocumentsContract.getDocumentId(child.uri) }.getOrNull()
+            val tree = runCatching {
+                DocumentsContract.buildTreeDocumentUri(authority, DocumentsContract.getDocumentId(child.uri))
+            }.getOrNull()
+            if (key == null || tree == null) continue
+            out.add(ChildFolder(name, tree, key))
+        }
+        return out.sortedWith { a, b -> compareNatural(a.name, b.name) }
+    }
 
     private fun collect(dir: DocumentFile, prefix: String, out: MutableList<Entry>, depth: Int) {
         if (depth > MAX_DEPTH) return
