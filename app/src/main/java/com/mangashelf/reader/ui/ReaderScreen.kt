@@ -92,7 +92,6 @@ import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
-import com.mangashelf.reader.ui.theme.ComicScrim
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
@@ -112,7 +111,7 @@ fun ReaderScreen(bookId: Long, onBack: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .background(MaterialTheme.colorScheme.background),
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
@@ -131,10 +130,10 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .background(MaterialTheme.colorScheme.background),
             contentAlignment = Alignment.Center
         ) {
-            Text("这本书没有可显示的页面", color = Color.White)
+            Text("这本书没有可显示的页面", color = MaterialTheme.colorScheme.onBackground)
         }
         return
     }
@@ -171,7 +170,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(MaterialTheme.colorScheme.background)
     ) {
         HorizontalPager(
             state = pager,
@@ -211,7 +210,11 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(ComicScrim, Color.Transparent)))
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(MaterialTheme.colorScheme.background.copy(alpha = 0.88f), Color.Transparent)
+                        )
+                    )
                     .statusBarsPadding()
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -220,12 +223,12 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     Icon(
                         imageVector = Icons.Rounded.ArrowBack,
                         contentDescription = "返回书架",
-                        tint = Color.White
+                        tint = MaterialTheme.colorScheme.onBackground
                     )
                 }
                 Text(
                     text = book.title,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onBackground,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -237,13 +240,13 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     modifier = Modifier
                         .padding(end = 6.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = 0.14f))
+                        .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.14f))
                         .clickable { showPagePicker = true }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
                         text = "${pager.currentPage + 1} / $pageCount",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onBackground,
                         style = MaterialTheme.typography.labelLarge
                     )
                 }
@@ -259,7 +262,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, ComicScrim)))
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background.copy(alpha = 0.88f))))
                     .navigationBarsPadding()
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
@@ -277,7 +280,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     Text(
                         text = if (book.rtl) "阅读方向：从右往左" else "阅读方向：从左往右",
                         style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.75f)
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f)
                     )
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = { showPagePicker = true }) {
@@ -413,7 +416,7 @@ private fun ZoomablePage(
                 ) {
                     Text(
                         text = "这一页无法显示\n文件可能已被删除或损坏",
-                        color = Color.White.copy(alpha = 0.55f),
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center
                     )
@@ -575,7 +578,7 @@ private fun PagePicker(
     Surface(
         // 这一层铺满整个阅读器：命中测试会停在最上层，下面的翻页手势自然收不到
         modifier = Modifier.fillMaxSize(),
-        color = Color(0xFF0E0E12)
+        color = MaterialTheme.colorScheme.background
     ) {
         Column(
             modifier = Modifier
@@ -590,11 +593,15 @@ private fun PagePicker(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White)
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "关闭",
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
                 }
                 Text(
                     text = "选择页面（共 ${pages.size} 页）",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onBackground,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -641,7 +648,7 @@ private fun PageThumb(
             .fillMaxWidth()
             .aspectRatio(0.7f)
             .clip(shape)
-            .background(Color(0xFF1A1A20))
+            .background(MaterialTheme.colorScheme.surface)
             .then(
                 if (isCurrent) {
                     Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)

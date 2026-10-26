@@ -67,11 +67,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.ui.theme.ComicScrim
+import com.mangashelf.reader.ui.theme.ThemeMode
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ShelfScreen(onOpenBook: (Long) -> Unit) {
+fun ShelfScreen(
+    onOpenBook: (Long) -> Unit,
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit
+) {
 
     val context = LocalContext.current
     val viewModel: ShelfViewModel = viewModel()
@@ -81,6 +86,7 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
 
     var showImportDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
+    var showThemeMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -186,6 +192,31 @@ fun ShelfScreen(onOpenBook: (Long) -> Unit) {
                                     showSortMenu = false
                                 }
                             )
+                        }
+                    }
+                    // 主题切换：白天 / 夜晚 / 跟随系统
+                    Box {
+                        TextButton(onClick = { showThemeMenu = true }) {
+                            Text("主题", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(
+                            expanded = showThemeMenu,
+                            onDismissRequest = { showThemeMenu = false }
+                        ) {
+                            ThemeMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode.label) },
+                                    leadingIcon = if (themeMode == mode) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        onThemeChange(mode)
+                                        showThemeMenu = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
