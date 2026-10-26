@@ -26,4 +26,11 @@ interface BookDao {
 
     @Query("DELETE FROM books WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /** 批量导入前用它判断"这个文件夹是不是已经导过" */
+    @Query("SELECT * FROM books WHERE sourceKey = :sourceKey LIMIT 1")
+    suspend fun findBySourceKey(sourceKey: String): Book?
+
+    @Query("UPDATE books SET sortMode = :mode, sortAsc = :asc WHERE id = :id")
+    suspend fun updateSort(id: Long, mode: String, asc: Boolean)
 }

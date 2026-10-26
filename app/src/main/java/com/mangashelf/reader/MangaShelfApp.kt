@@ -18,8 +18,10 @@ import kotlin.system.exitProcess
 class MangaShelfApp : Application() {
 
     val repository: BookRepository by lazy {
+        val database = AppDatabase.get(this)
         BookRepository(
-            dao = AppDatabase.get(this).bookDao(),
+            dao = database.bookDao(),
+            pageDao = database.pageDao(),
             storage = ComicStorage(this)
         )
     }

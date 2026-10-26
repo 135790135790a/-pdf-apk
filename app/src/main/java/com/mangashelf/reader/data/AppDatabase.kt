@@ -5,10 +5,17 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [Book::class], version = 1, exportSchema = false)
+@Database(
+    entities = [Book::class, PageEntry::class],
+    version = 2,
+    // 打开 schema 导出：schemas/ 下的 JSON 是以后写迁移与迁移测试的唯一依据
+    exportSchema = true
+)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun bookDao(): BookDao
+
+    abstract fun pageDao(): PageDao
 
     companion object {
         @Volatile
@@ -19,7 +26,10 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "mangashelf.db"
-            ).build().also { instance = it }
+            )
+                .addMigrations(MIGRATION_1_2)
+                .build()
+                .also { instance = it }
         }
     }
 }

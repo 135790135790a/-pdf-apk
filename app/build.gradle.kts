@@ -29,8 +29,14 @@ android {
         applicationId = "com.mangashelf.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.4.1"
+        versionCode = 9
+        versionName = "1.5.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    sourceSets {
+        // 把导出的 schema JSON 挂进测试资源，MigrationTestHelper 要读它
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 
     buildTypes {
@@ -75,6 +81,11 @@ android {
     }
 }
 
+// Room 的 schema 导出：迁移测试和以后写 Migration 的唯一依据
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)
@@ -108,6 +119,10 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
+
+    // 仪器测试：跑真实迁移（v1→v2）与启动冒烟。仅测试期依赖，不进 APK。
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

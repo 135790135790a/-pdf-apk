@@ -24,7 +24,23 @@ data class Book(
     /** 上次读到的页码（0 基） */
     val lastPage: Int = 0,
     /** true = 日漫从右往左翻页；false = 从左往右 */
-    val rtl: Boolean = true
+    val rtl: Boolean = true,
+
+    // ---------------------------------------------------------------------
+    // v1 → v2 新增（见 Migrations.kt）
+    // 全部带默认值，老数据的语义是"FIXED：页序固定，不参与重排"，与升级前行为一致。
+    // ---------------------------------------------------------------------
+
+    /** 排序规则：NATURAL / NAME / MTIME / SIZE / MANUAL / FIXED */
+    val sortMode: String = "FIXED",
+    /** 排序方向：true = 正序 */
+    val sortAsc: Boolean = true,
+    /** 去重键：同一源文件夹再次导入时用来识别"已经导过" */
+    val sourceKey: String? = null,
+    /** 源目录的 tree URI（已 takePersistableUriPermission），便于以后重新读取 */
+    val sourceTreeUri: String? = null,
+    /** 来源类型：IMAGE / PDF / FIXED（FIXED = 老数据，未知） */
+    val sourceType: String = "FIXED"
 ) {
     val progressFraction: Float
         get() = if (pageCount <= 1) 0f else (lastPage.toFloat() / (pageCount - 1)).coerceIn(0f, 1f)
