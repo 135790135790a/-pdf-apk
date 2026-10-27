@@ -10,7 +10,7 @@
       2. 包名 / versionCode / versionName 与 app/build.gradle.kts 完全一致
       3. minSdk / targetSdk 与 build.gradle.kts 一致
       4. 签名证书 SHA-256 是固定的那把（防止误用别的 keystore 发版）
-      5. 权限列表为空（本 App 不需要任何权限，多一条就是 bug）
+      5. 权限只允许白名单里的几条（前台服务 + 导入通知，不该有存储权限）
       6. 文件大小在合理范围（没漏文件、也没被打包进大资源）
       7. zipalign 对齐（apksigner verify 会一并检查）
 
@@ -125,7 +125,15 @@ if ($targetSdk -ne $expTarget) { $problems.Add("targetSdk 是 $targetSdk，期�
 # ---------------------------------------------------------------- 3. 权限
 # AndroidX Core 会在 targetSdk 34 上自动声明一个包名内的 receiver 保护权限，
 # 它不是运行时权限，属于框架自动生成，允许出现在白名单里的这一条。
-$permWhitelist = @("$pkg.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
+# 另外三条是 1.5.1 起为「导入不被打断」加的前台服务权限：
+# FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC 是启动前台服务的准入，
+# POST_NOTIFICATIONS 只为了让导入进度通知能被看见——都不是存储权限。
+$permWhitelist = @(
+    "$pkg.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+    'android.permission.FOREGROUND_SERVICE',
+    'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+    'android.permission.POST_NOTIFICATIONS'
+)
 $permNames = @($badging |
     Where-Object { $_ -match "^uses-permission:" } |
     ForEach-Object { ($_ -replace "^uses-permission:\s*", '') -replace "^name='", '' -replace "'$", '' })

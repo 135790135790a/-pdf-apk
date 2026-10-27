@@ -1,6 +1,8 @@
 package com.mangashelf.reader.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +53,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,6 +96,15 @@ fun ShelfScreen(
     val books by viewModel.books.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
     val order by viewModel.order.collectAsStateWithLifecycle()
+
+    // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
+    // 真正切到后台时靠 ImportForegroundService 保命，两者配合。
+    val importing = importState is ImportUiState.Running || importState is ImportUiState.Batch
+    DisposableEffect(importing) {
+        val window = (context as? Activity)?.window
+        if (importing) window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
 
     var showImportDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }

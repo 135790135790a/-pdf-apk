@@ -15,6 +15,8 @@ import com.mangashelf.reader.importer.FileNames
 import com.mangashelf.reader.importer.FolderImporter
 import com.mangashelf.reader.importer.ImageImporter
 import com.mangashelf.reader.importer.PdfImporter
+import com.mangashelf.reader.importer.StorageGuard
+import com.mangashelf.reader.service.ImportForegroundService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -114,7 +116,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         startImport(
             title = title,
             sourceKey = documentIdOf(uri),
-            sourceType = "PDF"
+            sourceType = "PDF",
+            estimate = { StorageGuard.forPdf(PdfImporter.pageCount(context, uri)) }
         ) { dir, progress ->
             PdfImporter.import(context, uri, dir, progress)
         }
@@ -130,7 +133,11 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             val stamp = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date())
             "图片漫画 $stamp"
         }
-        startImport(title = title, sourceType = "IMAGE") { dir, progress ->
+        startImport(
+            title = title,
+            sourceType = "IMAGE",
+            estimate = { StorageGuard.forImages(uris.size) }
+        ) { dir, progress ->
             ImageImporter.import(context, uris, dir, progress)
         }
     }
@@ -145,7 +152,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             title = title,
             sourceKey = documentIdOf(treeUri),
             sourceType = "IMAGE",
-            sourceTreeUri = treeUri.toString()
+            sourceTreeUri = treeUri.toString(),
+            estimate = { StorageGuard.forUnknown() }
         ) { dir, progress ->
             FolderImporter.import(context, treeUri, dir, progress)
         }
@@ -181,6 +189,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             var failed = 0
             var currentDir: File? = null
             paused.value = false
+            ImportForegroundService.start(context, "正在批量导入（共 ${children.size} 本）")
 
             try {
                 for ((i, child) in children.withIndex()) {
@@ -189,6 +198,14 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     if (repo.findBySourceKey(child.key) != null) {
                         skipped++
                         continue
+                    }
+
+                    // 每本开始前再查一次空间：一本动辄上百 MB，中途耗尽会白等一整本
+                    StorageGuard.check(context, StorageGuard.forUnknown())?.let { message ->
+                        _importState.value = ImportUiState.Failed(
+                            message + "\n\n已导入 $imported 本，剩下的没有继续。"
+                        )
+                        return@launch
                     }
 
                     val folder = repo.storage.newFolder()
@@ -249,6 +266,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 _importState.value = ImportUiState.Failed(t.message ?: "批量导入失败")
             } finally {
                 paused.value = false
+                ImportForegroundService.stop(context)
             }
         }
     }
@@ -323,11 +341,26 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         sourceKey: String? = null,
         sourceType: String = "FIXED",
         sourceTreeUri: String? = null,
+        estimate: (suspend () -> Long)? = null,
         work: suspend (File, (Int, Int) -> Unit) -> List<PageSource>
     ) {
         if (isBusy()) return
         importJob = viewModelScope.launch {
             _importState.value = ImportUiState.Running(title, 0, 0)
+
+            // 空间预检：数量能提前知道就精确估，不知道就按固定门槛兜底。
+            // 宁可在这里拦下来，也不要写到一半失败再回滚。
+            if (estimate != null) {
+                val need = withContext(Dispatchers.IO) { estimate() }
+                StorageGuard.check(context, need)?.let { message ->
+                    _importState.value = ImportUiState.Failed(message)
+                    return@launch
+                }
+            }
+
+            // 切后台/锁屏时靠前台服务保命；屏幕本身由 ShelfScreen 的 keepScreenOn 保证不熄
+            ImportForegroundService.start(context, "正在导入《$title》")
+
             val folder = repo.storage.newFolder()
             val dir = repo.storage.dirOf(folder)
             try {
@@ -352,6 +385,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             } catch (t: Throwable) {
                 withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
                 _importState.value = ImportUiState.Failed(t.message ?: "导入失败，请换一个文件试试")
+            } finally {
+                ImportForegroundService.stop(context)
             }
         }
     }

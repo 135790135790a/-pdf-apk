@@ -24,6 +24,18 @@ object PdfImporter {
     private const val TARGET_WIDTH = 1440
     private const val JPEG_QUALITY = 88
 
+    /**
+     * 只读出页数，给导入前的空间预检用。
+     *
+     * 读不出来（文件损坏、有密码）就返回 0，让调用方按「数量未知」处理——
+     * 预检失败不该阻止导入，真正的错误留给 [import] 去报。
+     */
+    fun pageCount(context: Context, uri: Uri): Int = runCatching {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+            PdfRenderer(pfd).use { it.pageCount }
+        } ?: 0
+    }.getOrDefault(0)
+
     suspend fun import(
         context: Context,
         uri: Uri,

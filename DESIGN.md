@@ -10,7 +10,7 @@
 | 决策 | 选择 | 理由 |
 | --- | --- | --- |
 | 形态 | 纯本地离线 App | 漫画文件通常很大、也常涉及版权，不做云端可避免账号、隐私、带宽三类问题 |
-| 权限 | 零权限（只用 SAF） | 系统文件选择器返回 Uri，我们只读一次并复制到私有目录，不需要 `READ_EXTERNAL_STORAGE` |
+| 权限 | 只有前台服务相关 3 条，不碰存储 | 系统文件选择器返回 Uri，只读一次并复制到私有目录，不需要 `READ_EXTERNAL_STORAGE`；`FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` / `POST_NOTIFICATIONS` 只为导入期间保命与显示进度 |
 | 内容模型 | "一本书 = 一个页面图片目录" | PDF 和散图都被归一成同一种东西，阅读器只认图片，导入端各自适配 |
 | 导航 | 两个界面，`MainActivity` 里一个 `Long?` 状态 | 只有两层，引 Navigation Compose 是负担；用 `rememberSaveable` 保住状态 |
 | 阅读方向 | 默认从右往左，可全局按书切换 | 漫画用户主体是日漫读者；但国漫/美漫必须能切，否则完全没法用 |

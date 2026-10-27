@@ -91,6 +91,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
 import kotlinx.coroutines.launch
@@ -177,10 +179,25 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
         if (!chromeVisible) chromeVisible = true else onBack()
     }
 
+    val imageContext = LocalContext.current
+
     val goTo: (Int) -> Unit = { target ->
         val clamped = target.coerceIn(0, pageCount - 1)
         if (clamped != pager.currentPage) {
             scope.launch { pager.animateScrollToPage(clamped) }
+        }
+    }
+
+    // 预取前后各一页：翻页时图片已经在内存/磁盘缓存里，不会先白一下。
+    // 用 Coil 主动 enqueue，而不是让 Pager 多组合一页——多组合会同时解码大图，更容易 OOM。
+    LaunchedEffect(pager.currentPage, pageList.size) {
+        listOf(pager.currentPage + 1, pager.currentPage - 1).forEach { index ->
+            val path = pageList.getOrNull(index).orEmpty()
+            if (path.isNotEmpty()) {
+                imageContext.imageLoader.enqueue(
+                    ImageRequest.Builder(imageContext).data(File(path)).build()
+                )
+            }
         }
     }
 
