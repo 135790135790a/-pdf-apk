@@ -1,5 +1,6 @@
 package com.mangashelf.reader
 
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,6 +19,8 @@ import com.mangashelf.reader.ui.theme.ThemeMode
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 必须在 super.onCreate 之前：启动窗口的底色是系统在这一步之后画的
+        applyStartupTheme()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
@@ -42,6 +45,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 冷启动那一帧的底色由启动窗口主题决定，那时 Compose 还没起来、读不到主题状态。
+     * 所以先按用户保存的选择挑一个窗口背景，避免「白天模式启动闪一下黑」。
+     *
+     * 注意：App 内切换主题时不重建 Activity（Compose 直接重组，窗口背景被 Surface 盖住），
+     * 所以这里只需要处理冷启动。
+     */
+    private fun applyStartupTheme() {
+        val dark = when (ThemeMode.load(this)) {
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+            ThemeMode.SYSTEM ->
+                (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                    Configuration.UI_MODE_NIGHT_YES
+        }
+        setTheme(if (dark) R.style.Theme_MangaShelf_Night else R.style.Theme_MangaShelf_Day)
     }
 
     private companion object {

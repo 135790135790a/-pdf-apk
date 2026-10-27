@@ -32,6 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,6 +43,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -58,10 +61,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
@@ -96,6 +102,7 @@ fun ShelfScreen(
     val books by viewModel.books.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
     val order by viewModel.order.collectAsStateWithLifecycle()
+    val query by viewModel.query.collectAsStateWithLifecycle()
 
     // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
     // 真正切到后台时靠 ImportForegroundService 保命，两者配合。
@@ -107,12 +114,26 @@ fun ShelfScreen(
     }
 
     var showImportDialog by remember { mutableStateOf(false) }
+    // 搜索：点放大镜展开输入框，再点关闭收起。收起时清空关键词，书架恢复完整。
+    var searchActive by rememberSaveable { mutableStateOf(false) }
+    var searchText by rememberSaveable { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
     var showSortMenu by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
     var pageOrderBookId by remember { mutableStateOf<Long?>(null) }
     var pendingZip by remember { mutableStateOf<File?>(null) }
     val safeMode = app.safeMode
+
+    // 展开搜索时自动聚焦输入框；收起时清空关键词（书架立刻恢复完整）
+    LaunchedEffect(searchActive) {
+        if (searchActive) {
+            runCatching { searchFocus.requestFocus() }
+        } else {
+            searchText = ""
+            viewModel.setQuery("")
+        }
+    }
 
     // 书架界面稳定显示 1.2 秒 → 本轮启动算健康。
     // 不能等"有书"才标记：新装用户书架是空的，否则会被启动守卫误判成连续启动失败而进安全模式。
@@ -189,16 +210,43 @@ fun ShelfScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "漫画书架",
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (searchActive) {
+                        OutlinedTextField(
+                            value = searchText,
+                            onValueChange = {
+                                searchText = it
+                                viewModel.setQuery(it)
+                            },
+                            placeholder = { Text("搜索书名") },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = 4.dp)
+                                .focusRequester(searchFocus)
+                        )
+                    } else {
+                        Text(
+                            text = "漫画书架",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 ),
                 actions = {
+                    IconButton(onClick = { searchActive = !searchActive }) {
+                        Icon(
+                            imageVector = if (searchActive) {
+                                Icons.Rounded.Close
+                            } else {
+                                Icons.Rounded.Search
+                            },
+                            contentDescription = if (searchActive) "关闭搜索" else "搜索书名"
+                        )
+                    }
                     Box {
                         TextButton(onClick = { showSortMenu = true }) {
                             Text("排序", color = MaterialTheme.colorScheme.onBackground)
@@ -289,11 +337,34 @@ fun ShelfScreen(
                 .padding(innerPadding)
         ) {
             if (books.isEmpty()) {
-                EmptyShelf(
-                    onPickFolder = launchFolder,
-                    onPickPdf = launchPdf,
-                    onPickImages = launchImages
-                )
+                if (query.isNotBlank()) {
+                    // 有搜索词但没结果：不能显示「书架空空」的导入引导，那会误导成书丢了
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "没有匹配「${query.trim()}」的书",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "换个关键词，或点右上角 × 关闭搜索",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    EmptyShelf(
+                        onPickFolder = launchFolder,
+                        onPickPdf = launchPdf,
+                        onPickImages = launchImages
+                    )
+                }
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),

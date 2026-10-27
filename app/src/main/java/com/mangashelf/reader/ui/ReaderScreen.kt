@@ -698,7 +698,7 @@ private fun PageThumb(
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
             // 缩略图读不出来就留一个深灰块，不要让网格里出现异常
-            error = ColorPainter(Color(0xFF2A2A32))
+            error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
         )
         Text(
             text = "${index + 1}",
@@ -708,7 +708,7 @@ private fun PageThumb(
                 .align(Alignment.BottomEnd)
                 .padding(3.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xCC000000))
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.82f))
                 .padding(horizontal = 4.dp, vertical = 1.dp)
         )
     }

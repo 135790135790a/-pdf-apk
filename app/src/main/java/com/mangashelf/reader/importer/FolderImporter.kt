@@ -7,6 +7,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.mangashelf.reader.data.PageSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.util.Locale
 
@@ -18,11 +19,21 @@ import java.util.Locale
  * - 按**相对路径自然排序**：2.png 在 10.png 之前，ch2/ 在 ch10/ 之前
  * - 非图片文件（说明.txt、Thumbs.db、.DS_Store）自动忽略
  * - 坏图跳过并继续，不让整本失败
+ *
+ * 超大目录（几千个文件）做了节流：目录遍历和逐页转码都会定期 yield。
+ * 每个目录条目都是一次跨进程查询，不节流的话取消/暂停要等整本转完才生效，
+ * IO 线程也会被占死、其他协程跟着饿。
  */
 object FolderImporter {
 
     private const val MAX_PAGES = 3000
     private const val MAX_DEPTH = 8
+
+    /** 每转码这么多页让出一次 */
+    private const val YIELD_EVERY_PAGES = 24
+
+    /** 每遍历这么多目录条目让出一次 */
+    private const val YIELD_EVERY_ENTRIES = 128
 
     private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "avif", "tif", "tiff")
 
@@ -50,6 +61,8 @@ object FolderImporter {
 
         val out = ArrayList<PageSource>(ordered.size)
         ordered.forEachIndexed { index, entry ->
+            // 上千页的目录，这里定期让出，取消能及时生效、进度也能滚动起来
+            if (index > 0 && index % YIELD_EVERY_PAGES == 0) yield()
             val bitmap = runCatching { ImageCodec.load(context, entry.uri) }.getOrNull()
             if (bitmap != null) {
                 val relPath = PageFileNaming.of(out.size)
@@ -95,13 +108,16 @@ object FolderImporter {
      * 这正是「海贼王 1-100 卷」那种结构：父目录里每个子目录是一本。
      * 父目录里直接散放的图片不在这里返回——那种情况仍走单本 [import]。
      */
-    fun listChildFolders(context: Context, rootTreeUri: Uri): List<ChildFolder> {
+    suspend fun listChildFolders(context: Context, rootTreeUri: Uri): List<ChildFolder> {
         val root = DocumentFile.fromTreeUri(context, rootTreeUri) ?: return emptyList()
         val authority = rootTreeUri.authority ?: return emptyList()
         val children = runCatching { root.listFiles() }.getOrNull() ?: return emptyList()
 
         val out = ArrayList<ChildFolder>(32)
+        var scanned = 0
         for (child in children) {
+            // 父目录下有几百个子文件夹时，遍历本身也可能要好几秒
+            if (++scanned % 64 == 0) yield()
             if (!child.isDirectory) continue
             val name = child.name?.trim().orEmpty()
             if (name.isEmpty() || name.startsWith(".")) continue
@@ -115,10 +131,13 @@ object FolderImporter {
         return out.sortedWith { a, b -> compareNatural(a.name, b.name) }
     }
 
-    private fun collect(dir: DocumentFile, prefix: String, out: MutableList<Entry>, depth: Int) {
+    private suspend fun collect(dir: DocumentFile, prefix: String, out: MutableList<Entry>, depth: Int) {
         if (depth > MAX_DEPTH) return
         val children = runCatching { dir.listFiles() }.getOrNull() ?: return
+        var scanned = 0
         for (child in children) {
+            // 每个条目 = 一次跨进程查询；上千个条目时定期让出
+            if (++scanned % YIELD_EVERY_ENTRIES == 0) yield()
             val name = child.name ?: continue
             if (name.startsWith(".")) continue
             if (child.isDirectory) {

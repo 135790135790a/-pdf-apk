@@ -78,9 +78,30 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     /** 当前书架排序（持久化，重进 App 保持） */
     val order: StateFlow<ShelfOrder> = _order.asStateFlow()
 
-    val books: StateFlow<List<Book>> = combine(repo.observeBooks(), _order) { list, order ->
-        order.apply(list)
+    private val _query = MutableStateFlow("")
+
+    /** 书架搜索词。只放内存、不落盘：下次打开 App 看到的是完整书架。 */
+    val query: StateFlow<String> = _query.asStateFlow()
+
+    val books: StateFlow<List<Book>> = combine(
+        repo.observeBooks(),
+        _order,
+        _query
+    ) { list, order, keyword ->
+        val sorted = order.apply(list)
+        val key = keyword.trim()
+        if (key.isEmpty()) {
+            sorted
+        } else {
+            // 只匹配书名。中文不分大小写，英文/数字忽略大小写，符合直觉。
+            sorted.filter { it.title.contains(key, ignoreCase = true) }
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 边打字边过滤，不需要额外点搜索按钮 */
+    fun setQuery(keyword: String) {
+        _query.value = keyword
+    }
 
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()

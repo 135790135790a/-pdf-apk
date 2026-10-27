@@ -2,4 +2,11 @@
 <resources>
     <!-- 图标底色：取自原图背景，已抹平为纯色，和前景无缝衔接 -->
     <color name="ic_launcher_background">#FDFDFB</color>
+
+    <!--
+      启动窗口底色。数值必须和 ui/theme/Color.kt 里的 NightBackground / DayBackground 一致，
+      否则冷启动那一帧和进来后的界面会差一个色号，看起来像闪了一下。
+    -->
+    <color name="splash_bg_dark">#16161B</color>
+    <color name="splash_bg_light">#F6F4EF</color>
 </resources>
