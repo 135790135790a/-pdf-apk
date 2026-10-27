@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -334,6 +335,13 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     modifier = Modifier.weight(1f)
                 )
                 // 页码做成可点的按钮：点它就能输入页码直接跳过去
+                TextButton(onClick = onLongPressPage) {
+                    Text(
+                        text = "保存本页",
+                        color = MaterialTheme.colorScheme.onBackground,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -439,6 +447,11 @@ private fun ZoomablePage(
     var offset by remember(path) { mutableStateOf(Offset.Zero) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
 
+    // pointerInput 的 lambda 只在 path 变化时重建，直接用外部 lambda 会捕获旧值；
+    // 用 rememberUpdatedState 保证长按/点击永远调用到最新的一版（指向当前页）。
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
+    val currentOnTapAt by rememberUpdatedState(onTapAt)
+
     LaunchedEffect(isCurrent) {
         if (!isCurrent) {
             scale = 1f
@@ -481,10 +494,10 @@ private fun ZoomablePage(
                 detectTapGestures(
                     onTap = { position ->
                         val width = if (viewSize.width == 0) 1 else viewSize.width
-                        onTapAt((position.x / width.toFloat()).coerceIn(0f, 0.999f))
+                        currentOnTapAt((position.x / width.toFloat()).coerceIn(0f, 0.999f))
                     },
                     // 长按 = 保存这一页（缩放状态下也有效，方便保存放大后的区域观察）
-                    onLongPress = { onLongPress() },
+                    onLongPress = { currentOnLongPress() },
                     onDoubleTap = {
                         if (scale > 1.01f) {
                             scale = 1f
