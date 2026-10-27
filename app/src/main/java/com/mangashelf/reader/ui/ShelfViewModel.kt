@@ -14,6 +14,7 @@ import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.ImportTask
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.data.PageSource
+import com.mangashelf.reader.importer.ArchiveImporter
 import com.mangashelf.reader.importer.FileNames
 import com.mangashelf.reader.importer.FolderImporter
 import com.mangashelf.reader.importer.ImageImporter
@@ -286,6 +287,21 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             sortAsc = sortAsc
         ) { dir, progress ->
             ImageImporter.import(context, uris, dir, progress)
+        }
+    }
+
+    /** CBZ / ZIP 漫画包 = 一本书（压缩包里的图片按名字自然排序成页） */
+    fun importArchive(uri: Uri) {
+        val title = FileNames.displayName(context, uri)
+            ?.let { FileNames.stripExtension(it) }
+            ?: "未命名漫画"
+        startImport(
+            title = title,
+            sourceKey = documentIdOf(uri),
+            sourceType = "CBZ",
+            estimate = { StorageGuard.forUnknown() }
+        ) { dir, progress ->
+            ArchiveImporter.import(context, uri, dir, progress)
         }
     }
 

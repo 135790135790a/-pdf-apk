@@ -188,6 +188,13 @@ fun ShelfScreen(
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importPdf(uri)
     }
+
+    // CBZ / ZIP 漫画包：压缩包里每张图 = 一页。不同文件管理器给 .cbz 报的 MIME 不一样，都列上
+    val archivePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.importArchive(uri)
+    }
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -228,6 +235,17 @@ fun ShelfScreen(
     val launchImages = { imagePicker.launch(arrayOf("image/*")) }
     val launchFolder = { folderPicker.launch(null) }
     val launchBatch = { batchPicker.launch(null) }
+    val launchArchive = {
+        archivePicker.launch(
+            arrayOf(
+                "application/zip",
+                "application/x-zip-compressed",
+                "application/x-cbz",
+                "application/vnd.comicbook+zip",
+                "application/octet-stream"
+            )
+        )
+    }
 
     // 备份 = 一个 zip（含图片）。存到用户选的位置，不依赖账号或服务器
     val backupState by viewModel.backupState.collectAsStateWithLifecycle()
@@ -523,7 +541,7 @@ fun ShelfScreen(
             text = {
                 Column {
                     Text(
-                        text = "选一个 PDF、一批图片，或者一整个文件夹（整个文件夹会按文件名顺序排成一本）。",
+                        text = "选一个 PDF、一批图片、一整个文件夹，或者一个 CBZ / ZIP 漫画包（整个文件夹和压缩包都会按文件名顺序排成一本）。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -566,6 +584,16 @@ fun ShelfScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("选择图片（可多选）")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            showImportDialog = false
+                            launchArchive()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("选择 CBZ / ZIP 压缩包")
                     }
                 }
             },

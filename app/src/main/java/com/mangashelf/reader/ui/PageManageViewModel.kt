@@ -11,11 +11,14 @@ import com.mangashelf.reader.data.BookRepository
 import com.mangashelf.reader.data.BookStats
 import com.mangashelf.reader.data.PageEntry
 import com.mangashelf.reader.data.PageSortMode
+import com.mangashelf.reader.data.ThumbStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 
 /**
@@ -45,6 +48,36 @@ class PageManageViewModel(app: Application, private val bookId: Long) : AndroidV
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /**
+     * 缩略图路径缓存（内存）。网格滚动时每格都会问一次，
+     * 不能每次都 stat 磁盘，也不能每次都重新解码。
+     */
+    private val thumbs = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    /** 同一时刻只生成一张缩略图：并发解码多张大图只会更快地 OOM */
+    private val thumbLock = Mutex()
+
+    /** 已经生成过的缩略图路径；没生成过返回 null（调用方先用原图兜底） */
+    fun cachedThumb(page: PageEntry): String? = thumbs[page.id]
+
+    /**
+     * 确保这一页的缩略图存在。生成是懒的：网格滚到哪页才生成哪页。
+     * 返回缩略图的绝对路径，失败返回 null。
+     */
+    suspend fun ensureThumb(page: PageEntry): String? {
+        thumbs[page.id]?.let { return it }
+        val book = _book.value ?: return null
+        return thumbLock.withLock {
+            thumbs[page.id]?.let { return@withLock it }
+            val rel = runCatching { ThumbStore.ensure(repo.storage, book.folder, page) }
+                .getOrNull() ?: return@withLock null
+            if (rel.isEmpty()) return@withLock null
+            val path = repo.storage.thumbFile(book.folder, page.relPath).absolutePath
+            thumbs[page.id] = path
+            path
+        }
+    }
 
     init {
         reload()

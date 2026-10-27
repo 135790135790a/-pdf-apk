@@ -57,6 +57,55 @@ internal object ImageCodec {
     }
 
     /**
+     * 从本地文件解码（CBZ/ZIP 解压出来的条目用）。
+     *
+     * 和 [load] 同一套防 OOM 策略，只是不经过 ContentResolver——
+     * 压缩包里的条目没有 Uri，也不该为了读两遍尺寸先落一次盘。
+     */
+    fun load(file: File): Bitmap? = decodeTwoPass(
+        peek = { options -> BitmapFactory.decodeFile(file.absolutePath, options) },
+        decode = { options -> BitmapFactory.decodeFile(file.absolutePath, options) }
+    )
+
+    /** 从内存字节解码（压缩包条目） */
+    fun loadBytes(bytes: ByteArray): Bitmap? = decodeTwoPass(
+        peek = { options -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) },
+        decode = { options -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) }
+    )
+
+    /**
+     * 两遍解码：第一遍只要尺寸（`inJustDecodeBounds`，此时返回值一定是 null，只能看 outWidth/outHeight），
+     * 第二遍按算出来的采样率真正解码；OOM 时降档重试一次。
+     */
+    private fun decodeTwoPass(
+        peek: (BitmapFactory.Options) -> Bitmap?,
+        decode: (BitmapFactory.Options) -> Bitmap?
+    ): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        peek(bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        for (edge in intArrayOf(MAX_EDGE, MAX_EDGE / 2)) {
+            try {
+                var sample = 1
+                while (longest / sample > edge * 2) sample *= 2
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                val decoded = decode(options) ?: return null
+                return normalize(decoded, ExifInterface.ORIENTATION_NORMAL)
+            } catch (_: OutOfMemoryError) {
+                System.gc()
+            } catch (_: RuntimeException) {
+                return null
+            }
+        }
+        return null
+    }
+
+    /**
      * 第一遍只读尺寸。注意 inJustDecodeBounds = true 时 decodeStream 一定返回 null，
      * 所以不能拿返回值判断成功与否，只能看 outWidth / outHeight。
      */

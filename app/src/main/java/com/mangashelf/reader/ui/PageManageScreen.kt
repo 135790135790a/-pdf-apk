@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.mangashelf.reader.data.PageEntry
 import com.mangashelf.reader.data.PageSortMode
 import java.io.File
@@ -112,6 +114,12 @@ fun PageManageScreen(
         pages
     } else {
         visible
+    }
+
+    // 每格都要知道“这是第几页”。用查表代替每格 indexOfFirst：
+    // 3000 页的书每个可见格遍历一遍列表，滚动时这点开销会累积成掉帧
+    val indexById = remember(visible) {
+        visible.mapIndexed { i, p -> p.id to i }.toMap()
     }
 
     Scaffold(
@@ -228,12 +236,17 @@ fun PageManageScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(shown, key = { it.id }) { page ->
+                    // 缩略图懒生成：滚到哪格才生成哪格；生成好之前先用原图（按 480px 采样解码）兜底
+                    val thumb by produceState(initialValue = vm.cachedThumb(page), page.id) {
+                        value = vm.ensureThumb(page)
+                    }
                     PageCell(
                         app = app,
                         folder = book?.folder.orEmpty(),
                         page = page,
-                        index = visible.indexOfFirst { it.id == page.id },
+                        index = indexById[page.id] ?: -1,
                         checked = page.id in selected,
+                        thumbPath = thumb,
                         onClick = { vm.toggle(page.id) }
                     )
                 }
@@ -281,11 +294,22 @@ private fun PageCell(
     page: PageEntry,
     index: Int,
     checked: Boolean,
+    thumbPath: String?,
     onClick: () -> Unit
 ) {
-    val path = remember(page.relPath, folder) {
+    val context = LocalContext.current
+    val model = remember(thumbPath, page.relPath, folder) {
         val storage = (app as com.mangashelf.reader.MangaShelfApp).repository.storage
-        File(storage.dirOf(folder), page.relPath).absolutePath
+        if (thumbPath != null) {
+            thumbPath
+        } else {
+            // 缩略图还没生成好：先显示原图，但让它按 480px 采样解码。
+            // 直接喂原图路径会让 Coil 按全尺寸解码（1800px），快速滚动时内存吃不住。
+            ImageRequest.Builder(context)
+                .data(File(storage.dirOf(folder), page.relPath).absolutePath)
+                .size(480)
+                .build()
+        }
     }
     val accent = MaterialTheme.colorScheme.primary
     Box(
@@ -302,7 +326,7 @@ private fun PageCell(
             .padding(3.dp)
     ) {
         AsyncImage(
-            model = path,
+            model = model,
             contentDescription = "第 ${index + 1} 页",
             contentScale = ContentScale.Crop,
             modifier = Modifier
