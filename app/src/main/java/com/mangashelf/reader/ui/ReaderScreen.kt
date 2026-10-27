@@ -1,9 +1,15 @@
 package com.mangashelf.reader.ui
 
 import android.app.Activity
+import android.Manifest
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -71,10 +77,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
@@ -84,6 +92,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -95,6 +104,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.GalleryExporter
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
@@ -180,6 +190,60 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
     }
 
     val imageContext = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+
+    // 长按页面 → 保存这一页到相册。漫画里常有想单独存下来的整页，
+    // 复制到相册比"截图再裁剪"省事；单页失败不影响阅读，只弹个提示。
+    var savingPage by remember { mutableStateOf(false) }
+    val doSavePage: () -> Unit = {
+        val path = pageList.getOrNull(pager.currentPage).orEmpty()
+        if (path.isNotEmpty() && !savingPage) {
+            val pageNumber = pager.currentPage + 1
+            savingPage = true
+            scope.launch {
+                val saved = GalleryExporter.export(
+                    imageContext,
+                    "${book.title}_第${pageNumber}页",
+                    listOf(File(path))
+                )
+                Toast.makeText(
+                    imageContext,
+                    if (saved > 0) {
+                        "已保存第 $pageNumber 页到相册"
+                    } else {
+                        "保存失败：相册写入被拒绝（可能是存储权限或空间不足）"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
+                savingPage = false
+            }
+        }
+    }
+
+    // Android 9 及以下写相册需要存储权限；10+ 走 MediaStore，不弹权限
+    val storagePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            doSavePage()
+        } else {
+            Toast.makeText(imageContext, "没有存储权限，无法保存图片", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val onLongPressPage: () -> Unit = {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        val needPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(
+                imageContext,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needPermission) {
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            doSavePage()
+        }
+    }
 
     val goTo: (Int) -> Unit = { target ->
         val clamped = target.coerceIn(0, pageCount - 1)
@@ -218,6 +282,7 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                 path = pageList.getOrNull(index).orEmpty(),
                 isCurrent = index == pager.currentPage,
                 onZoomChanged = { zoomed -> if (index == pager.currentPage) zoomedIn = zoomed },
+                onLongPress = onLongPressPage,
                 onTapAt = { fraction ->
                     if (!zoomedIn) {
                         when {
@@ -367,7 +432,8 @@ private fun ZoomablePage(
     path: String,
     isCurrent: Boolean,
     onZoomChanged: (Boolean) -> Unit,
-    onTapAt: (Float) -> Unit
+    onTapAt: (Float) -> Unit,
+    onLongPress: () -> Unit
 ) {
     var scale by remember(path) { mutableStateOf(1f) }
     var offset by remember(path) { mutableStateOf(Offset.Zero) }
@@ -417,6 +483,8 @@ private fun ZoomablePage(
                         val width = if (viewSize.width == 0) 1 else viewSize.width
                         onTapAt((position.x / width.toFloat()).coerceIn(0f, 0.999f))
                     },
+                    // 长按 = 保存这一页（缩放状态下也有效，方便保存放大后的区域观察）
+                    onLongPress = { onLongPress() },
                     onDoubleTap = {
                         if (scale > 1.01f) {
                             scale = 1f
