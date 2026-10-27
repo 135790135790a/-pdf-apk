@@ -1,0 +1,217 @@
+package com.mangashelf.reader.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.mangashelf.reader.MangaShelfApp
+import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.BookRepository
+import com.mangashelf.reader.data.BookStats
+import com.mangashelf.reader.data.PageEntry
+import com.mangashelf.reader.data.PageSortMode
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.util.Locale
+
+/**
+ * 页面管理（v1.5.3）：重排、软删除、设封面、恢复、彻底删除。
+ *
+ * 重排只改 `pages.idx`，**不动磁盘文件名**——所以调顺序不会碰文件，
+ * 也就不存在"改到一半断电导致图片丢失"的窗口。
+ */
+class PageManageViewModel(app: Application, private val bookId: Long) : AndroidViewModel(app) {
+
+    private val repo: BookRepository = (app as MangaShelfApp).repository
+
+    private val _book = MutableStateFlow<Book?>(null)
+    val book: StateFlow<Book?> = _book.asStateFlow()
+
+    private val _pages = MutableStateFlow<List<PageEntry>>(emptyList())
+    val pages: StateFlow<List<PageEntry>> = _pages.asStateFlow()
+
+    private val _selected = MutableStateFlow<Set<Long>>(emptySet())
+    val selected: StateFlow<Set<Long>> = _selected.asStateFlow()
+
+    private val _stats = MutableStateFlow<BookStats?>(null)
+    val stats: StateFlow<BookStats?> = _stats.asStateFlow()
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    init {
+        reload()
+    }
+
+    fun reload() {
+        viewModelScope.launch {
+            refresh()
+        }
+    }
+
+    private suspend fun refresh() {
+        val book = runCatching { repo.observeBook(bookId).first() }.getOrNull()
+        _book.value = book
+        _pages.value = repo.pageEntries(bookId)
+        _stats.value = book?.let { runCatching { repo.bookStats(it) }.getOrNull() }
+    }
+
+    fun toggle(id: Long) {
+        _selected.value = _selected.value.let { if (id in it) it - id else it + id }
+    }
+
+    fun selectAll() {
+        _selected.value = _pages.value.filter { it.deleted == 0 }.map { it.id }.toSet()
+    }
+
+    fun clearSelection() {
+        _selected.value = emptySet()
+    }
+
+    fun consumeMessage() {
+        _message.value = null
+    }
+
+    /** 上移 / 下移选中块；direction = -1 上移，+1 下移 */
+    fun moveSelected(direction: Int) {
+        val book = _book.value ?: return
+        val visible = _pages.value.filter { it.deleted == 0 }
+        val sel = _selected.value
+        if (sel.isEmpty()) return
+        val indices = visible.indices.filter { visible[it].id in sel }
+        if (indices.isEmpty()) return
+        if (direction < 0 && indices.first() == 0) return
+        if (direction > 0 && indices.last() == visible.lastIndex) return
+        _busy.value = true
+        viewModelScope.launch {
+            val list = visible.toMutableList()
+            if (direction < 0) {
+                indices.forEach { i ->
+                    val tmp = list[i]
+                    list[i] = list[i - 1]
+                    list[i - 1] = tmp
+                }
+            } else {
+                indices.reversed().forEach { i ->
+                    val tmp = list[i]
+                    list[i] = list[i + 1]
+                    list[i + 1] = tmp
+                }
+            }
+            runCatching { repo.reorderPages(book, list.map { it.id }) }
+            refresh()
+            _busy.value = false
+        }
+    }
+
+    fun applySort(mode: PageSortMode) {
+        val book = _book.value ?: return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { repo.applyPageOrder(book, mode, mode.defaultAsc) }
+            refresh()
+            _selected.value = emptySet()
+            _busy.value = false
+            _message.value = "已按「${mode.label}」重排"
+        }
+    }
+
+    fun resetOrder() {
+        val book = _book.value ?: return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { repo.resetPageOrder(book) }
+            refresh()
+            _selected.value = emptySet()
+            _busy.value = false
+            _message.value = "已恢复导入时的顺序"
+        }
+    }
+
+    /** 设为封面：参数是当前可见顺序里的位置（0 基） */
+    fun setCover(position: Int) {
+        val book = _book.value ?: return
+        viewModelScope.launch {
+            runCatching { repo.setCoverPage(book, position) }
+            refresh()
+            _message.value = "封面已更新"
+        }
+    }
+
+    fun deleteSelected() {
+        val book = _book.value ?: return
+        val sel = _selected.value
+        if (sel.isEmpty()) return
+        _busy.value = true
+        viewModelScope.launch {
+            val n = runCatching { repo.softDeletePages(book, sel.toList()) }.getOrDefault(0)
+            refresh()
+            _selected.value = emptySet()
+            _busy.value = false
+            _message.value = "已把 $n 页移入回收站"
+        }
+    }
+
+    fun restoreSelected() {
+        val book = _book.value ?: return
+        val sel = _selected.value
+        if (sel.isEmpty()) return
+        _busy.value = true
+        viewModelScope.launch {
+            val n = runCatching { repo.restorePages(book, sel.toList()) }.getOrDefault(0)
+            refresh()
+            _selected.value = emptySet()
+            _busy.value = false
+            _message.value = "已恢复 $n 页"
+        }
+    }
+
+    /** 彻底删除回收站里的页（文件一起删，不可恢复） */
+    fun purgeDeleted() {
+        val book = _book.value ?: return
+        _busy.value = true
+        viewModelScope.launch {
+            val (n, bytes) = runCatching { repo.purgeDeletedPages(book) }
+                .getOrDefault(0 to 0L)
+            refresh()
+            _busy.value = false
+            _message.value = "已彻底删除 $n 页，释放 ${formatBytes(bytes)}"
+        }
+    }
+
+    fun restoreAllDeleted() {
+        val book = _book.value ?: return
+        val deleted = _pages.value.filter { it.deleted != 0 }.map { it.id }
+        if (deleted.isEmpty()) return
+        _busy.value = true
+        viewModelScope.launch {
+            val n = runCatching { repo.restorePages(book, deleted) }.getOrDefault(0)
+            refresh()
+            _busy.value = false
+            _message.value = "已恢复 $n 页"
+        }
+    }
+
+    companion object {
+        fun factory(app: Application, bookId: Long): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return PageManageViewModel(app, bookId) as T
+                }
+            }
+    }
+}
+
+internal fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+    bytes >= 1024L -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+    else -> "$bytes B"
+}

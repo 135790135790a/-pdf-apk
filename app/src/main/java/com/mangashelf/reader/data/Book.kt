@@ -1,5 +1,6 @@
 package com.mangashelf.reader.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -40,7 +41,19 @@ data class Book(
     /** 源目录的 tree URI（已 takePersistableUriPermission），便于以后重新读取 */
     val sourceTreeUri: String? = null,
     /** 来源类型：IMAGE / PDF / FIXED（FIXED = 老数据，未知） */
-    val sourceType: String = "FIXED"
+    val sourceType: String = "FIXED",
+
+    // ---------------------------------------------------------------------
+    // v4 → v5 新增（见 Migrations.kt MIGRATION_4_5）
+    // 带 defaultValue：迁移用 ALTER TABLE ADD COLUMN，Room 期望的结构里也得有默认值才一致。
+    // ---------------------------------------------------------------------
+
+    /** 原始来源大小（PDF 文件字节数 / 文件夹里图片总字节数）；0 = 未知 */
+    @ColumnInfo(defaultValue = "0")
+    val sourceSizeBytes: Long = 0L,
+    /** 封面用第几页（0 基，指的是"未删除页里的第几个"）；被删则回退第一页 */
+    @ColumnInfo(defaultValue = "0")
+    val coverPageIdx: Int = 0
 ) {
     val progressFraction: Float
         get() = if (pageCount <= 1) 0f else (lastPage.toFloat() / (pageCount - 1)).coerceIn(0f, 1f)

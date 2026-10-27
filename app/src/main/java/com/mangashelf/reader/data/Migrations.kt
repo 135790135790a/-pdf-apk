@@ -4,6 +4,64 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v4 → v5：页面级管理（PDF 原始页码 / 缩略图 / 尺寸 / 软删除）+ 书架长按信息（来源大小 / 封面页）。
+ *
+ * 两张表分两种策略：
+ * - `books` 只有几十行，且被 `pages` 外键引用，**重建表要处理外键**，所以走 ALTER；
+ *   ALTER 加 NOT NULL 必须带 DEFAULT，因此实体上标了 `@ColumnInfo(defaultValue = "0")`，
+ *   让 Room 期望的结构里也带默认值，两边才对得上。
+ * - `pages` 行数等于总页数（可能上万），但重建一次也就几十毫秒，而且能彻底避免
+ *   "ALTER 留下的 DEFAULT 子句与 Room 期望不一致"导致启动时 `IllegalStateException`。
+ *
+ * 老数据回填：`originPage = idx + 1`（升级前的页序就是导入顺序，等价于 PDF 原始页码；
+ * 文件夹来源的书 originPage 不影响任何行为）。`deleted` 全置 0，全部视为未删除。
+ */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `sourceSizeBytes` INTEGER NOT NULL DEFAULT 0"
+        )
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `coverPageIdx` INTEGER NOT NULL DEFAULT 0"
+        )
+
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `pages_new` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `bookId` INTEGER NOT NULL,
+                `idx` INTEGER NOT NULL,
+                `relPath` TEXT NOT NULL,
+                `originName` TEXT NOT NULL,
+                `sizeBytes` INTEGER NOT NULL,
+                `modifiedAt` INTEGER NOT NULL,
+                `manualPos` INTEGER,
+                `originPage` INTEGER NOT NULL,
+                `thumbRelPath` TEXT,
+                `width` INTEGER NOT NULL,
+                `height` INTEGER NOT NULL,
+                `deleted` INTEGER NOT NULL,
+                FOREIGN KEY(`bookId`) REFERENCES `books`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            """
+            INSERT INTO `pages_new`
+                (`id`, `bookId`, `idx`, `relPath`, `originName`, `sizeBytes`, `modifiedAt`, `manualPos`,
+                 `originPage`, `thumbRelPath`, `width`, `height`, `deleted`)
+            SELECT `id`, `bookId`, `idx`, `relPath`, `originName`, `sizeBytes`, `modifiedAt`, `manualPos`,
+                   `idx` + 1, NULL, 0, 0, 0
+            FROM `pages`
+            """.trimIndent()
+        )
+        database.execSQL("DROP TABLE `pages`")
+        database.execSQL("ALTER TABLE `pages_new` RENAME TO `pages`")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_pages_bookId` ON `pages` (`bookId`)")
+    }
+}
+
+/**
  * v3 → v4：新增 import_tasks 表，让导入队列能活过进程被杀。
  *
  * 纯新增表，不碰任何既有数据；表结构必须与 Room 从 [ImportTask] 生成的 SQL 逐字符一致

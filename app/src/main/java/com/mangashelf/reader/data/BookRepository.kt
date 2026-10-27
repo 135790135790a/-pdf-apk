@@ -1,6 +1,7 @@
 package com.mangashelf.reader.data
 
 import com.mangashelf.reader.importer.FolderImporter
+import com.mangashelf.reader.importer.PdfImporter
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +62,10 @@ class BookRepository(
                         relPath = source.relPath,
                         originName = source.originName,
                         sizeBytes = source.sizeBytes,
-                        modifiedAt = source.modifiedAt
+                        modifiedAt = source.modifiedAt,
+                        originPage = source.originPage,
+                        width = source.width,
+                        height = source.height
                     )
                 }
             )
@@ -144,7 +148,7 @@ class BookRepository(
                 }
                 PageSortMode.MTIME -> compareBy { it.modifiedAt }
                 PageSortMode.SIZE -> compareBy { it.sizeBytes }
-                PageSortMode.FIXED -> null
+                PageSortMode.FIXED, PageSortMode.MANUAL -> null
             }
 
             val ordered = if (comparator == null) {
@@ -188,7 +192,8 @@ class BookRepository(
                 relPath = file.name,
                 originName = file.name,
                 sizeBytes = file.length(),
-                modifiedAt = file.lastModified()
+                modifiedAt = file.lastModified(),
+                originPage = index + 1
             )
         }
         pageDao.replaceAll(book.id, regenerated)
@@ -208,6 +213,23 @@ class BookRepository(
     }
 
     fun coverPath(book: Book): String = storage.coverPath(book.folder)
+
+    /**
+     * 封面路径（v5）：按 `coverPageIdx` 找可见页的真实文件名。
+     *
+     * 不能再用 `page_001.jpg`——页序重排/删页之后，第 1 页可能已经是别的文件了。
+     */
+    suspend fun coverPathOf(book: Book): String = withContext(Dispatchers.IO) {
+        val target = runCatching {
+            pageDao.getAt(book.id, book.coverPageIdx.coerceAtLeast(0))
+                ?: pageDao.getAt(book.id, 0)
+        }.getOrNull()
+        if (target != null) {
+            File(storage.dirOf(book.folder), target.relPath).absolutePath
+        } else {
+            storage.pagePath(book.folder, 0)
+        }
+    }
 
     // ---------------------------------------------------------------------
     // 导入任务（v4）：让"导到一半被杀"这件事有据可查
@@ -254,4 +276,198 @@ class BookRepository(
     suspend fun cleanupOrphanFolders(): Int = withContext(Dispatchers.IO) {
         runCatching { storage.cleanupOrphans(dao.allFolders().toSet()) }.getOrDefault(0)
     }
+
+    // ---------------------------------------------------------------------
+    // 页面级管理（v5）：删页 / 恢复 / 重排 / 封面 / 缩略图 / 重新解析
+    // ---------------------------------------------------------------------
+
+    /** 全部页（含已软删除的），页面管理页用 */
+    suspend fun allPageEntries(book: Book): List<PageEntry> = withContext(Dispatchers.IO) {
+        val existing = pageDao.getByBook(book.id)
+        if (existing.isNotEmpty()) existing else entriesOrBackfill(book)
+    }
+
+    /** 未删除的页，阅读器/统计用 */
+    suspend fun visiblePageEntries(book: Book): List<PageEntry> = withContext(Dispatchers.IO) {
+        val all = allPageEntries(book)
+        all.filter { it.deleted == 0 }.sortedBy { it.idx }
+    }
+
+    /**
+     * 软删除若干页：只打标记，页图和记录都留着（回收站可恢复）。
+     * 删除后必须重排剩余页的 idx（连续 0..n-1），否则阅读器 `pages[idx]` 会错位。
+     *
+     * @return 剩余未删页数；为 0 表示用户删光了，调用方应阻止（至少留一页）
+     */
+    suspend fun softDeletePages(book: Book, ids: List<Long>): Int = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext visiblePageEntries(book).size
+        pageDao.markDeleted(ids)
+        val remaining = pageDao.getVisible(book.id)
+        pageDao.applyOrder(remaining.map { it.id })
+        syncBookAfterPageChange(book, remaining.size)
+        remaining.size
+    }
+
+    /** 从回收站恢复 */
+    suspend fun restorePages(book: Book, ids: List<Long>): Int = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext 0
+        pageDao.markVisible(ids)
+        val remaining = pageDao.getVisible(book.id)
+        // 恢复的页按 originPage 重新插回，而不是全丢到末尾
+        val ordered = remaining.sortedWith(
+            compareBy<PageEntry> { it.originPage.takeIf { p -> p > 0 } ?: (it.idx + 1) }
+                .thenBy { it.relPath }
+        )
+        pageDao.applyOrder(ordered.map { it.id })
+        syncBookAfterPageChange(book, ordered.size)
+        ids.size
+    }
+
+    /**
+     * 永久清空回收站：删页图 + 删缩略图 + 删记录。
+     * @return (删除页数, 释放字节数)
+     */
+    suspend fun purgeDeletedPages(book: Book): Pair<Int, Long> = withContext(Dispatchers.IO) {
+        val deleted = pageDao.getDeleted(book.id)
+        if (deleted.isEmpty()) return@withContext 0 to 0L
+
+        var freed = 0L
+        val dir = storage.dirOf(book.folder)
+        deleted.forEach { page ->
+            val file = File(dir, page.relPath)
+            freed += file.length()
+            runCatching { file.delete() }
+            ThumbStore.delete(storage, book.folder, page.relPath)
+        }
+        pageDao.deleteByIds(deleted.map { it.id })
+        deleted.size to freed
+    }
+
+    /** 按给定的页 id 顺序重排（上移/下移/拖拽到最后都走这里） */
+    suspend fun reorderPages(book: Book, orderedIds: List<Long>) = withContext(Dispatchers.IO) {
+        if (orderedIds.isEmpty()) return@withContext
+        pageDao.applyOrder(orderedIds)
+        dao.updateSort(book.id, PageSortMode.MANUAL.name, true)
+    }
+
+    /**
+     * 恢复默认顺序：
+     * - PDF 来源按 `originPage`（PDF 原始页码）；
+     * - 其他来源按落盘文件名自然序。
+     */
+    suspend fun resetPageOrder(book: Book) = withContext(Dispatchers.IO) {
+        val visible = pageDao.getVisible(book.id)
+        if (visible.isEmpty()) return@withContext
+        val ordered = if (visible.any { it.originPage > 0 }) {
+            visible.sortedBy { it.originPage }
+        } else {
+            visible.sortedWith { a, b -> FolderImporter.compareNatural(a.relPath, b.relPath) }
+        }
+        pageDao.applyOrder(ordered.map { it.id })
+        dao.updateSort(book.id, PageSortMode.FIXED.name, true)
+    }
+
+    /** 把某页设为封面；[pageIdx] 是未删除页里的位置 */
+    suspend fun setCoverPage(book: Book, pageIdx: Int) = withContext(Dispatchers.IO) {
+        val count = pageDao.countVisible(book.id)
+        if (count == 0) return@withContext
+        dao.update(book.copy(coverPageIdx = pageIdx.coerceIn(0, count - 1)))
+    }
+
+    /** 生成（或命中）某页缩略图，返回相对路径；失败返回 null 由 UI 用原图兜底 */
+    suspend fun ensureThumb(book: Book, page: PageEntry): String? = withContext(Dispatchers.IO) {
+        val rel = ThumbStore.ensure(storage, book.folder, page) ?: return@withContext null
+        if (page.thumbRelPath != rel) {
+            runCatching { pageDao.updateThumb(page.id, rel, page.width, page.height) }
+        }
+        rel
+    }
+
+    /** 缩略图的绝对路径（已存在才返回） */
+    fun thumbPath(book: Book, page: PageEntry): String? {
+        val rel = page.thumbRelPath ?: return null
+        val file = File(storage.dirOf(book.folder), rel)
+        return if (file.isFile) file.absolutePath else null
+    }
+
+    /** 书架长按信息面板：占用 / 页数 / 回收站页数 */
+    suspend fun bookStats(book: Book): BookStats = withContext(Dispatchers.IO) {
+        val all = allPageEntries(book)
+        BookStats(
+            pageCount = all.count { it.deleted == 0 },
+            deletedCount = all.count { it.deleted == 1 },
+            dirBytes = storage.dirSize(book.folder),
+            sourceBytes = book.sourceSizeBytes,
+            hasSourcePdf = storage.sourcePdf(book.folder).isFile
+        )
+    }
+
+    /**
+     * 用保留的 `source.pdf` 重新解析整本。
+     *
+     * 会覆盖当前页序、封面和回收站（旧的页面记录整个重建），所以调用方必须先二次确认。
+     * 没有原件（老版本导入的书 / 文件夹来源）时返回 -1。
+     */
+    suspend fun reparsePdf(context: Context, book: Book): Int = withContext(Dispatchers.IO) {
+        val source = storage.sourcePdf(book.folder)
+        if (!source.isFile || source.length() <= 0L) return@withContext -1
+
+        val dir = storage.dirOf(book.folder)
+        val pages = PdfImporter.import(
+            context = context,
+            uri = Uri.fromFile(source),
+            destDir = dir,
+            keepSource = false,
+            onProgress = { _, _ -> }
+        )
+        if (pages.isEmpty()) return@withContext -2
+
+        pageDao.replaceAll(
+            book.id,
+            pages.mapIndexed { index, source ->
+                PageEntry(
+                    bookId = book.id,
+                    idx = index,
+                    relPath = source.relPath,
+                    originName = source.originName,
+                    sizeBytes = source.sizeBytes,
+                    modifiedAt = source.modifiedAt,
+                    originPage = source.originPage,
+                    width = source.width,
+                    height = source.height
+                )
+            }
+        )
+        dao.update(
+            book.copy(
+                pageCount = pages.size,
+                lastPage = 0,
+                coverPageIdx = 0,
+                sortMode = PageSortMode.FIXED.name
+            )
+        )
+        pages.size
+    }
+
+    /** 删页/恢复后同步 books 的页数、进度、封面（避免阅读器越界、封面指向空） */
+    private suspend fun syncBookAfterPageChange(book: Book, pageCount: Int) {
+        val fresh = dao.get(book.id) ?: return
+        val cover = fresh.coverPageIdx.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        val lastPage = fresh.lastPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        if (fresh.pageCount != pageCount || fresh.coverPageIdx != cover || fresh.lastPage != lastPage) {
+            dao.update(fresh.copy(pageCount = pageCount, coverPageIdx = cover, lastPage = lastPage))
+        }
+    }
 }
+
+/** 书架长按信息面板要展示的统计 */
+data class BookStats(
+    val pageCount: Int,
+    val deletedCount: Int,
+    /** 整本目录占用（页面图 + 缩略图 + 原 PDF） */
+    val dirBytes: Long,
+    /** 原始来源大小（导入时记的 PDF/文件夹大小） */
+    val sourceBytes: Long,
+    /** 是否保留着原 PDF，决定「重新解析」入口是否可用 */
+    val hasSourcePdf: Boolean
+)

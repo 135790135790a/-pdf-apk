@@ -210,9 +210,26 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         checkInterrupted()
+        refreshCovers()
     }
 
-    fun coverPath(book: Book): String = repo.coverPath(book)
+    /**
+     * 封面缓存：v5 起封面可能是任意一页（「设为封面」），路径要查数据库，
+     * 不能在 composition 里同步查，所以在这里批量预热，UI 只读缓存。
+     */
+    private val _covers = MutableStateFlow<Map<Long, String>>(emptyMap())
+    val covers: StateFlow<Map<Long, String>> = _covers.asStateFlow()
+
+    private fun refreshCovers() {
+        viewModelScope.launch {
+            repo.observeBooks().collect { list ->
+                val map = list.associate { it.id to repo.coverPathOf(it) }
+                _covers.value = map
+            }
+        }
+    }
+
+    fun coverOf(bookId: Long): String = _covers.value[bookId] ?: ""
 
     /**
      * 切到某个排序：点的是当前排序就翻转方向，点别的就换成它并重置为该排序的默认方向。
@@ -243,7 +260,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             sourceType = "PDF",
             estimate = { StorageGuard.forPdf(PdfImporter.pageCount(context, uri)) }
         ) { dir, progress ->
-            PdfImporter.import(context, uri, dir, progress)
+            PdfImporter.import(context, uri, dir, onProgress = progress)
         }
     }
 

@@ -17,6 +17,10 @@ import java.io.FileOutputStream
  * 之所以是"预渲染"而不是"打开时再渲染"：
  * - PdfRenderer 只能一条一条顺序渲染，渲染一张要几十到几百毫秒，翻页时会明显卡；
  * - 预渲染后页面就是普通图片，翻页只受图片解码限制，体验和看本地图片一致。
+ *
+ * v1.5.3 起额外把**原 PDF 复制一份**到书目录（`source.pdf`）：
+ * 用户要求"删掉的页能从原 PDF 重新解析回来"。只存 SAF Uri 不够——授权会在进程重启后失效。
+ * 代价是 PDF 书占双份空间，导入前的空间预检按 2 倍估算。
  */
 object PdfImporter {
 
@@ -36,13 +40,30 @@ object PdfImporter {
         } ?: 0
     }.getOrDefault(0)
 
+    /**
+     * @param keepSource true = 额外保存一份原 PDF 到 [destDir]/source.pdf（供"重新解析"用）
+     */
     suspend fun import(
         context: Context,
         uri: Uri,
         destDir: File,
+        keepSource: Boolean = true,
         onProgress: (done: Int, total: Int) -> Unit
     ): List<PageSource> = withContext(Dispatchers.IO) {
         destDir.mkdirs()
+
+        if (keepSource) {
+            // 先复制原件：复制失败就别往下导了，否则会留下一本"删了页就再也回不来"的书
+            val target = File(destDir, "source.pdf")
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(target).use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("无法读取这个 PDF 文件")
+            }.onFailure {
+                target.delete()
+                throw IllegalStateException("保存原 PDF 失败：${it.message}")
+            }
+        }
 
         val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
             ?: throw IllegalStateException("无法打开这个 PDF 文件")
@@ -85,7 +106,10 @@ object PdfImporter {
                                 relPath = relPath,
                                 originName = "",
                                 sizeBytes = file.length(),
-                                modifiedAt = file.lastModified()
+                                modifiedAt = file.lastModified(),
+                                originPage = index + 1,
+                                width = width,
+                                height = height
                             )
                         )
                     }

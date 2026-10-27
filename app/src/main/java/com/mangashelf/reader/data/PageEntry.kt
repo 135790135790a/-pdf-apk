@@ -52,5 +52,23 @@ data class PageEntry(
     /** 原始文件修改时间，供"按时间排序" */
     val modifiedAt: Long = 0L,
     /** 手动拖动排序时的位置；null 表示没被手动摆过 */
-    val manualPos: Int? = null
+    val manualPos: Int? = null,
+
+    // ---------------------------------------------------------------------
+    // v4 → v5 新增（见 Migrations.kt MIGRATION_4_5）
+    // ---------------------------------------------------------------------
+
+    /**
+     * PDF 里的原始页码（1 基）。
+     * 非 PDF 来源（文件夹/图片）为 0 —— 「按原始页码排序」对它们是空操作。
+     */
+    val originPage: Int = 0,
+    /** 缩略图相对路径（`thumbs/xxx.webp`）；null = 还没生成，用原图兜底 */
+    val thumbRelPath: String? = null,
+    /** 原图宽（像素），网格按比例占位，避免加载时跳一下 */
+    val width: Int = 0,
+    /** 原图高（像素） */
+    val height: Int = 0,
+    /** 1 = 已被软删除：页图和记录都还在，能恢复；清理回收站才物理删除 */
+    val deleted: Int = 0
 )

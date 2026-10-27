@@ -93,6 +93,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -111,7 +112,7 @@ import java.io.File
 import kotlin.math.roundToInt
 
 @Composable
-fun ReaderScreen(bookId: Long, onBack: () -> Unit) {
+fun ReaderScreen(bookId: Long, onBack: () -> Unit, onManagePages: () -> Unit = {}) {
     val context = LocalContext.current
     val app = context.applicationContext as MangaShelfApp
     val viewModel: ReaderViewModel = viewModel(
@@ -131,13 +132,18 @@ fun ReaderScreen(bookId: Long, onBack: () -> Unit) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
         }
     } else {
-        ReaderContent(viewModel = viewModel, book = currentBook, onBack = onBack)
+        ReaderContent(viewModel = viewModel, book = currentBook, onBack = onBack, onManagePages = onManagePages)
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> Unit) {
+private fun ReaderContent(
+    viewModel: ReaderViewModel,
+    book: Book,
+    onBack: () -> Unit,
+    onManagePages: () -> Unit
+) {
     // 页序存在数据库里（pages 表），要异步读；null = 还在加载
     val pages by produceState<List<String>?>(initialValue = null, book.id, book.pageCount) {
         value = viewModel.loadPages(book)
@@ -393,7 +399,13 @@ private fun ReaderContent(viewModel: ReaderViewModel, book: Book, onBack: () -> 
                     TextButton(onClick = { showPagePicker = true }) {
                         Text("跳页", color = MaterialTheme.colorScheme.primary)
                     }
-                    TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
+                    TextButton(onClick = onManagePages) {
+                            Text(
+                                text = "页面管理",
+                                fontSize = 12.sp
+                            )
+                        }
+                        TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
                         Text(
                             text = if (book.rtl) "改为从左往右" else "改为从右往左",
                             color = MaterialTheme.colorScheme.primary

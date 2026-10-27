@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.mangashelf.reader.ui.PageManageScreen
 import com.mangashelf.reader.ui.ReaderScreen
 import com.mangashelf.reader.ui.ShelfScreen
 import com.mangashelf.reader.ui.theme.MangaShelfTheme
@@ -31,17 +32,28 @@ class MainActivity : ComponentActivity() {
             MangaShelfTheme(mode = themeMode) {
                 // -1 表示停留在书架；否则为正在阅读的书 id。用 saveable 保证旋转/重建后不丢。
                 var openBookId by rememberSaveable { mutableStateOf(NO_BOOK) }
-                if (openBookId == NO_BOOK) {
-                    ShelfScreen(
+                var manageBookId by rememberSaveable { mutableStateOf(NO_BOOK) }
+                when {
+                    manageBookId != NO_BOOK -> PageManageScreen(
+                        bookId = manageBookId,
+                        onBack = { manageBookId = NO_BOOK }
+                    )
+
+                    openBookId != NO_BOOK -> ReaderScreen(
+                        bookId = openBookId,
+                        onBack = { openBookId = NO_BOOK },
+                        onManagePages = { manageBookId = openBookId }
+                    )
+
+                    else -> ShelfScreen(
                         onOpenBook = { openBookId = it },
+                        onManagePages = { manageBookId = it },
                         themeMode = themeMode,
                         onThemeChange = { mode ->
                             themeMode = mode
                             ThemeMode.save(context, mode)
                         }
                     )
-                } else {
-                    ReaderScreen(bookId = openBookId, onBack = { openBookId = NO_BOOK })
                 }
             }
         }

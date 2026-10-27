@@ -33,6 +33,36 @@ class ComicStorage(context: Context) {
 
     fun coverPath(folder: String): String = pagePath(folder, 0)
 
+    /**
+     * 原始 PDF 的副本。
+     *
+     * 为什么留一份：用户要求"删掉的页能从原 PDF 重新解析回来"。
+     * 只存 SAF Uri 不行 —— 授权会在进程重启/清除数据后失效，重装 App 就彻底读不到了。
+     * 代价是 PDF 书占双份空间（页面图 + 原件），所以导入前要按 2 倍估算。
+     */
+    fun sourcePdf(folder: String): File = File(dirOf(folder), "source.pdf")
+
+    /** 缩略图文件（`thumbs/<页名>.webp`），同目录下独立子目录，删页时一起清 */
+    fun thumbFile(folder: String, relPath: String): File {
+        val base = relPath.substringAfterLast('/').substringBeforeLast('.')
+        return File(File(dirOf(folder), "thumbs"), "$base.webp")
+    }
+
+    /** 缩略图的相对路径（存数据库用，不存绝对路径） */
+    fun thumbRelPath(relPath: String): String {
+        val base = relPath.substringAfterLast('/').substringBeforeLast('.')
+        return "thumbs/$base.webp"
+    }
+
+    /** 整本占用（页面图 + 缩略图 + 原 PDF），给书架长按信息面板用 */
+    fun dirSize(folder: String): Long {
+        val dir = dirOf(folder)
+        if (!dir.isDirectory) return 0L
+        return runCatching {
+            dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+    }
+
     fun deleteFolder(folder: String) {
         dirOf(folder).deleteRecursively()
     }

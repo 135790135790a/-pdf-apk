@@ -15,5 +15,11 @@ data class PageSource(
     /** 源文件字节数，取不到时 0 */
     val sizeBytes: Long,
     /** 源文件最后修改时间，取不到时 0 */
-    val modifiedAt: Long
+    val modifiedAt: Long,
+    /** PDF 原始页码（1 基）；文件夹/图片来源为 0 */
+    val originPage: Int = 0,
+    /** 落盘图宽（像素），取不到时 0 */
+    val width: Int = 0,
+    /** 落盘图高（像素），取不到时 0 */
+    val height: Int = 0
 )

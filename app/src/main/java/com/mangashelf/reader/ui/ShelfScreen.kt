@@ -103,6 +103,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun ShelfScreen(
     onOpenBook: (Long) -> Unit,
+    onManagePages: (Long) -> Unit,
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit
 ) {
@@ -115,6 +116,7 @@ fun ShelfScreen(
     val order by viewModel.order.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
+    val covers by viewModel.covers.collectAsStateWithLifecycle()
 
     // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
     // 真正切到后台时靠 ImportForegroundService 保命，两者配合。
@@ -473,7 +475,7 @@ fun ShelfScreen(
                     items(books, key = { it.id }) { book ->
                         BookCard(
                             book = book,
-                            coverPath = viewModel.coverPath(book),
+                            coverPath = covers[book.id].orEmpty(),
                             showCover = !safeMode,
                             onClick = { onOpenBook(book.id) },
                             onLongClick = { optionsBookId = book.id }
@@ -727,7 +729,10 @@ fun ShelfScreen(
             onDismiss = { optionsBookId = null },
             onRename = { title -> viewModel.renameBook(optionsBook, title) },
             onToggleDirection = { viewModel.toggleDirection(optionsBook) },
-            onOpenPageOrder = { pageOrderBookId = optionsBook.id },
+            onManagePages = {
+                optionsBookId = null
+                onManagePages(optionsBook.id)
+            },
             onSaveToGallery = {
                 saveChoiceBookId = optionsBook.id
                 optionsBookId = null
@@ -994,17 +999,21 @@ private fun BookCard(
     }
 }
 
+private fun formatBookDate(at: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(at))
+
 @Composable
 private fun BookOptionsDialog(
     book: Book,
     onDismiss: () -> Unit,
     onRename: (String) -> Unit,
     onToggleDirection: () -> Unit,
-    onOpenPageOrder: () -> Unit,
+    onManagePages: () -> Unit,
     onSaveToGallery: () -> Unit,
     onDelete: () -> Unit
 ) {
     var title by remember(book.id) { mutableStateOf(book.title) }
+    var confirmingDelete by remember(book.id) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1029,19 +1038,31 @@ private fun BookOptionsDialog(
                     Text(if (book.rtl) "改为从左往右" else "改为从右往左")
                 }
                 Spacer(Modifier.height(4.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text(
+                    text = "${book.pageCount} 页 · ${book.sourceType} · 导入于 ${formatBookDate(book.createdAt)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(
                     text = "页序：${PageSortMode.fromStorage(book.sortMode).label}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                TextButton(onClick = onOpenPageOrder) {
-                    Text("调整页面顺序")
+                TextButton(onClick = onManagePages) {
+                    Text("页面管理（排序 / 删除 / 封面）")
                 }
                 TextButton(onClick = onSaveToGallery) {
                     Text("保存到相册")
                 }
-                TextButton(onClick = onDelete) {
-                    Text("从书架删除", color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = {
+                    // 二次确认：第一次点只是变成「确认删除」，避免手滑
+                    if (!confirmingDelete) confirmingDelete = true else onDelete()
+                }) {
+                    Text(
+                        text = if (confirmingDelete) "再点一次确认删除（图片一起删）" else "从书架删除",
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             }
         },
