@@ -36,4 +36,22 @@ class ComicStorage(context: Context) {
     fun deleteFolder(folder: String) {
         dirOf(folder).deleteRecursively()
     }
+
+    /**
+     * 删掉不属于任何一本书的目录。
+     *
+     * 只会在启动时调用：导入中途被杀（进程被回收、用户强杀）会留下写了一半的目录，
+     * 里面既没有完整页、也没有对应的 books 行，留着只会在下次导入时占用空间。
+     *
+     * 注意：**绝不能在导入进行中调用**，否则会把正在写的目录删掉。
+     */
+    fun cleanupOrphans(knownFolders: Set<String>): Int {
+        var removed = 0
+        root.listFiles()?.forEach { file ->
+            if (file.isDirectory && file.name !in knownFolders) {
+                if (runCatching { file.deleteRecursively() }.getOrDefault(false)) removed++
+            }
+        }
+        return removed
+    }
 }

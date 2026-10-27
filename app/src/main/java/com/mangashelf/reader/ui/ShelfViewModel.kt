@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.documentfile.provider.DocumentFile
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.ImportTask
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.data.PageSource
 import com.mangashelf.reader.importer.FileNames
@@ -59,11 +60,28 @@ sealed interface ImportUiState {
         val imported: Int,
         val skipped: Int,
         val failed: Int,
-        val cancelled: Boolean
+        val cancelled: Boolean,
+        /** 有失败项时可以按这个 id 重试 */
+        val batchId: String? = null
     ) : ImportUiState
 
     data class Failed(val message: String) : ImportUiState
 }
+
+/** 上次进程被杀时没导完的一批 */
+data class InterruptedBatch(
+    val batchId: String,
+    val count: Int,
+    val titles: List<String>
+)
+
+/** 队列里的一本 */
+private class QueueItem(
+    val taskId: Long,
+    val title: String,
+    val uri: Uri?,
+    val key: String?
+)
 
 class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -106,8 +124,16 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
 
+    private val _interrupted = MutableStateFlow<InterruptedBatch?>(null)
+    /** 上次导入被系统打断时，书架顶部显示的提示 */
+    val interrupted: StateFlow<InterruptedBatch?> = _interrupted.asStateFlow()
+
     private var importJob: Job? = null
     private val paused = MutableStateFlow(false)
+
+    init {
+        checkInterrupted()
+    }
 
     fun coverPath(book: Book): String = repo.coverPath(book)
 
@@ -186,6 +212,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * 队列式批量导入：
+     * - 每本书在 import_tasks 里有一行记录，进程被杀后下次启动能说清楚"上次差几本"
      * - 一次一本，导完这本就入库（中途取消已导入的书不丢）
      * - 已导入过的（sourceKey 相同）自动跳过，可以断点续传
      * - 两本书之间可以暂停/继续
@@ -205,90 +232,92 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            var imported = 0
-            var skipped = 0
-            var failed = 0
-            var currentDir: File? = null
-            paused.value = false
-            ImportForegroundService.start(context, "正在批量导入（共 ${children.size} 本）")
-
-            try {
-                for ((i, child) in children.withIndex()) {
-                    awaitResume(i, children.size, skipped)
-
-                    if (repo.findBySourceKey(child.key) != null) {
-                        skipped++
-                        continue
-                    }
-
-                    // 每本开始前再查一次空间：一本动辄上百 MB，中途耗尽会白等一整本
-                    StorageGuard.check(context, StorageGuard.forUnknown())?.let { message ->
-                        _importState.value = ImportUiState.Failed(
-                            message + "\n\n已导入 $imported 本，剩下的没有继续。"
-                        )
-                        return@launch
-                    }
-
-                    val folder = repo.storage.newFolder()
-                    val dir = repo.storage.dirOf(folder)
-                    currentDir = dir
-
-                    val pages = try {
-                        withContext(Dispatchers.IO) {
-                            FolderImporter.import(context, child.treeUri, dir) { done, total ->
-                                _importState.value = ImportUiState.Batch(
-                                    index = i + 1,
-                                    total = children.size,
-                                    title = child.name,
-                                    done = done,
-                                    totalPages = total,
-                                    skipped = skipped,
-                                    paused = paused.value
-                                )
-                            }
-                        }
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (t: Throwable) {
-                        withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
-                        currentDir = null
-                        failed++
-                        continue
-                    }
-
-                    currentDir = null
-                    if (pages.isEmpty()) {
-                        withContext(Dispatchers.IO) { dir.deleteRecursively() }
-                        failed++
-                        continue
-                    }
-
-                    repo.insertBook(
-                        Book(
+            val batchId = newBatchId()
+            val now = System.currentTimeMillis()
+            val ids = runCatching {
+                repo.enqueueTasks(
+                    children.mapIndexed { index, child ->
+                        ImportTask(
+                            batchId = batchId,
                             title = child.name,
-                            folder = folder,
-                            pageCount = pages.size,
                             sourceKey = child.key,
                             sourceTreeUri = child.treeUri.toString(),
-                            sourceType = "IMAGE"
-                        ),
-                        pages
-                    )
-                    imported++
-                }
-                _importState.value = ImportUiState.Finished(imported, skipped, failed, cancelled = false)
-            } catch (ce: CancellationException) {
-                currentDir?.let { d ->
-                    withContext(NonCancellable + Dispatchers.IO) { d.deleteRecursively() }
-                }
-                _importState.value = ImportUiState.Finished(imported, skipped, failed, cancelled = true)
-                throw ce
-            } catch (t: Throwable) {
-                _importState.value = ImportUiState.Failed(t.message ?: "批量导入失败")
-            } finally {
-                paused.value = false
-                ImportForegroundService.stop(context)
+                            sourceType = "IMAGE",
+                            sortIndex = index,
+                            status = ImportTask.PENDING,
+                            error = null,
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    }
+                )
+            }.getOrElse { emptyList() }
+
+            val items = children.mapIndexed { index, child ->
+                QueueItem(
+                    taskId = ids.getOrNull(index) ?: -1L,
+                    title = child.name,
+                    uri = child.treeUri,
+                    key = child.key
+                )
             }
+            runBatch(batchId, items)
+        }
+    }
+
+    /** 重试上次被中断的一批 */
+    fun retryInterrupted() {
+        val info = _interrupted.value ?: return
+        if (isBusy()) return
+        _interrupted.value = null
+        importJob = viewModelScope.launch {
+            val tasks = runCatching { repo.tasksOfBatch(info.batchId) }.getOrDefault(emptyList())
+                .filter {
+                    it.status == ImportTask.FAILED ||
+                        it.status == ImportTask.PENDING ||
+                        it.status == ImportTask.RUNNING
+                }
+            if (tasks.isEmpty()) return@launch
+
+            runCatching { repo.resetFailed(info.batchId) }
+            runBatch(
+                info.batchId,
+                tasks.map {
+                    QueueItem(
+                        taskId = it.id,
+                        title = it.title,
+                        uri = it.sourceTreeUri?.let { raw -> runCatching { Uri.parse(raw) }.getOrNull() },
+                        key = it.sourceKey
+                    )
+                }
+            )
+        }
+    }
+
+    /** 选择不重试：把这批标记为失败，提示不再出现 */
+    fun dismissInterrupted() {
+        val info = _interrupted.value ?: return
+        _interrupted.value = null
+        viewModelScope.launch {
+            runCatching { repo.failUnfinished(info.batchId, "用户跳过了上次未完成的导入") }
+        }
+    }
+
+    /** 收尾弹窗里点「重试失败项」 */
+    fun retryFailedOf(state: ImportUiState.Finished) {
+        val batchId = state.batchId ?: return
+        _importState.value = ImportUiState.Idle
+        viewModelScope.launch {
+            val tasks = runCatching { repo.tasksOfBatch(batchId) }.getOrDefault(emptyList())
+                .filter { it.status == ImportTask.FAILED || it.status == ImportTask.PENDING }
+            if (tasks.isEmpty()) return@launch
+            runCatching { repo.resetFailed(batchId) }
+            runBatch(
+                batchId,
+                tasks.map {
+                    QueueItem(it.id, it.title, it.sourceTreeUri?.let { raw -> Uri.parse(raw) }, it.sourceKey)
+                }
+            )
         }
     }
 
@@ -313,7 +342,9 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isBusy(): Boolean =
-        importJob?.isActive == true || _importState.value is ImportUiState.Running
+        importJob?.isActive == true ||
+            _importState.value is ImportUiState.Running ||
+            _importState.value is ImportUiState.Batch
 
     /** 两本书之间停一下，直到用户点「继续」 */
     private suspend fun awaitResume(index: Int, total: Int, skipped: Int) {
@@ -328,6 +359,148 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 paused = true
             )
             delay(150)
+        }
+    }
+
+    /**
+     * 跑一批书。首次导入和"重试上次中断的"走同一条路，保证行为一致。
+     *
+     * 每本的状态都会写回 import_tasks：DONE / FAILED(带原因)。
+     * 进程在这一步被杀，下次启动就能靠这些行说清楚差在哪。
+     */
+    private suspend fun runBatch(batchId: String, items: List<QueueItem>) {
+        var imported = 0
+        var skipped = 0
+        var failed = 0
+        var currentDir: File? = null
+        paused.value = false
+        ImportForegroundService.start(context, "正在导入（共 ${items.size} 本）")
+
+        try {
+            for ((index, item) in items.withIndex()) {
+                awaitResume(index, items.size, skipped)
+
+                // 断点续传：同一本已经导过就不再重复导入
+                if (item.key != null && repo.findBySourceKey(item.key) != null) {
+                    skipped++
+                    if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.DONE)
+                    continue
+                }
+
+                // 每本开始前再查一次空间：一本动辄上百 MB，中途耗尽会白等一整本
+                StorageGuard.check(context, StorageGuard.forUnknown())?.let { message ->
+                    if (item.taskId > 0) {
+                        repo.taskStatus(item.taskId, ImportTask.FAILED, "存储空间不足")
+                    }
+                    runCatching { repo.cancelPending(batchId) }
+                    _importState.value = ImportUiState.Failed(
+                        message + "\n\n已导入 $imported 本，剩下的没有继续。"
+                    )
+                    return
+                }
+
+                val uri = item.uri
+                if (uri == null) {
+                    failed++
+                    if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.FAILED, "来源已失效")
+                    continue
+                }
+
+                if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.RUNNING)
+
+                val folder = repo.storage.newFolder()
+                val dir = repo.storage.dirOf(folder)
+                currentDir = dir
+
+                val pages = try {
+                    withContext(Dispatchers.IO) {
+                        FolderImporter.import(context, uri, dir) { done, total ->
+                            _importState.value = ImportUiState.Batch(
+                                index = index + 1,
+                                total = items.size,
+                                title = item.title,
+                                done = done,
+                                totalPages = total,
+                                skipped = skipped,
+                                paused = paused.value
+                            )
+                            ImportForegroundService.update("正在导入《${item.title}》 $done/$total")
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
+                    currentDir = null
+                    failed++
+                    if (item.taskId > 0) {
+                        repo.taskStatus(item.taskId, ImportTask.FAILED, t.message ?: "导入失败")
+                    }
+                    continue
+                }
+
+                currentDir = null
+                if (pages.isEmpty()) {
+                    withContext(Dispatchers.IO) { dir.deleteRecursively() }
+                    failed++
+                    if (item.taskId > 0) {
+                        repo.taskStatus(item.taskId, ImportTask.FAILED, "没有读到任何页面")
+                    }
+                    continue
+                }
+
+                runCatching {
+                    repo.insertBook(
+                        Book(
+                            title = item.title,
+                            folder = folder,
+                            pageCount = pages.size,
+                            sourceKey = item.key,
+                            sourceTreeUri = uri.toString(),
+                            sourceType = "IMAGE"
+                        ),
+                        pages
+                    )
+                }.onSuccess {
+                    imported++
+                    if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.DONE)
+                }.onFailure { t ->
+                    // 入库失败：目录已经写完，必须删掉，否则就是孤儿
+                    withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
+                    failed++
+                    if (item.taskId > 0) {
+                        repo.taskStatus(item.taskId, ImportTask.FAILED, t.message ?: "写入书架失败")
+                    }
+                }
+            }
+
+            runCatching { repo.cancelPending(batchId) }
+            _importState.value = ImportUiState.Finished(
+                imported = imported,
+                skipped = skipped,
+                failed = failed,
+                cancelled = false,
+                batchId = batchId
+            )
+        } catch (ce: CancellationException) {
+            currentDir?.let { dir ->
+                withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
+            }
+            runCatching { repo.cancelPending(batchId) }
+            _importState.value = ImportUiState.Finished(
+                imported = imported,
+                skipped = skipped,
+                failed = failed,
+                cancelled = true,
+                batchId = batchId
+            )
+            throw ce
+        } catch (t: Throwable) {
+            runCatching { repo.cancelPending(batchId) }
+            _importState.value = ImportUiState.Failed(t.message ?: "批量导入失败")
+        } finally {
+            paused.value = false
+            ImportForegroundService.stop(context)
         }
     }
 
@@ -379,6 +552,28 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // 单本导入也留一条任务记录：被打断时用户同样需要知道"上次那本没导完"
+            val batchId = newBatchId()
+            val now = System.currentTimeMillis()
+            val taskId = runCatching {
+                repo.enqueueTasks(
+                    listOf(
+                        ImportTask(
+                            batchId = batchId,
+                            title = title,
+                            sourceKey = sourceKey,
+                            sourceTreeUri = sourceTreeUri,
+                            sourceType = sourceType,
+                            sortIndex = 0,
+                            status = ImportTask.RUNNING,
+                            error = null,
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    )
+                ).firstOrNull() ?: -1L
+            }.getOrDefault(-1L)
+
             // 切后台/锁屏时靠前台服务保命；屏幕本身由 ShelfScreen 的 keepScreenOn 保证不熄
             ImportForegroundService.start(context, "正在导入《$title》")
 
@@ -388,6 +583,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 val pages = withContext(Dispatchers.IO) {
                     work(dir) { done, total ->
                         _importState.value = ImportUiState.Running(title, done, total)
+                        ImportForegroundService.update("正在导入《$title》 $done/$total")
                     }
                 }
                 if (pages.isEmpty()) throw IllegalStateException("没有读到任何页面，请确认文件是否损坏")
@@ -402,15 +598,37 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     ),
                     pages
                 )
+                if (taskId > 0) repo.taskStatus(taskId, ImportTask.DONE)
                 _importState.value = ImportUiState.Idle
             } catch (t: Throwable) {
                 withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
+                if (taskId > 0) {
+                    repo.taskStatus(taskId, ImportTask.FAILED, t.message ?: "导入失败")
+                }
                 _importState.value = ImportUiState.Failed(t.message ?: "导入失败，请换一个文件试试")
             } finally {
                 ImportForegroundService.stop(context)
             }
         }
     }
+
+    /** 启动时问一句：上次是不是有没导完的 */
+    private fun checkInterrupted() {
+        viewModelScope.launch {
+            val tasks = runCatching { repo.unfinishedTasks() }.getOrDefault(emptyList())
+            if (tasks.isEmpty()) return@launch
+            val batchId = tasks.first().batchId
+            _interrupted.value = InterruptedBatch(
+                batchId = batchId,
+                count = tasks.size,
+                titles = tasks.take(5).map { it.title }
+            )
+        }
+    }
+
+    private fun newBatchId(): String =
+        "b" + System.currentTimeMillis().toString(36) + "-" +
+            java.util.UUID.randomUUID().toString().take(4)
 
     private fun documentIdOf(uri: Uri): String? =
         runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()

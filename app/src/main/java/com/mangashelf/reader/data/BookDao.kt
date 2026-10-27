@@ -33,4 +33,8 @@ interface BookDao {
 
     @Query("UPDATE books SET sortMode = :mode, sortAsc = :asc WHERE id = :id")
     suspend fun updateSort(id: Long, mode: String, asc: Boolean)
+
+    /** 启动时清理孤儿目录用：这些目录还要，其余的可以删 */
+    @Query("SELECT folder FROM books")
+    suspend fun allFolders(): List<String>
 }

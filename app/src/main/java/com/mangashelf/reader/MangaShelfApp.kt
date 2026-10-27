@@ -48,7 +48,24 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
         super.onCreate()
         installCrashHandler()
         StartupGuard.onAppStart(this)
-        healDatabaseIfCorrupt()
+        // 两件事必须串行：先确认数据库可用，再决定要不要清残留目录。
+        // 如果数据库损坏刚被重建，books 是空的，这时候清残留会把所有漫画目录删光。
+        background.launch {
+            val repaired = healDatabaseIfCorrupt()
+            if (!repaired) cleanupOrphanFolders()
+            runCatching { repository.pruneTasks() }
+        }
+    }
+
+    /**
+     * 启动时清掉"写了一半"的残留目录。
+     *
+     * 只在启动这一刻安全：那时不可能有导入在跑。导入中途被系统杀掉的目录，
+     * 既没有对应的 books 行、也没有完整页，留着只会白占空间。
+     * 失败不处理——目录删不掉不至于让 App 起不来。
+     */
+    private suspend fun cleanupOrphanFolders() {
+        runCatching { repository.cleanupOrphanFolders() }
     }
 
     /** 书架成功显示出书时调用，表示这次启动是健康的 */
@@ -61,6 +78,7 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
         return BookRepository(
             dao = database.bookDao(),
             pageDao = database.pageDao(),
+            taskDao = database.importTaskDao(),
             storage = ComicStorage(this)
         )
     }
@@ -89,29 +107,29 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
      *
      * 注意只对「损坏」下手；迁移失败之类的逻辑错误保留原库，交给崩溃页显示原因。
      */
-    private fun healDatabaseIfCorrupt() {
-        background.launch {
-            val database = runCatching { AppDatabase.get(this@MangaShelfApp) }.getOrNull() ?: return@launch
-            val failure = runCatching { database.openHelper.writableDatabase }.exceptionOrNull() ?: return@launch
-            if (!failure.looksCorrupt()) return@launch
+    private suspend fun healDatabaseIfCorrupt(): Boolean {
+        val database = runCatching { AppDatabase.get(this) }.getOrNull() ?: return false
+        val failure = runCatching { database.openHelper.writableDatabase }.exceptionOrNull()
+            ?: return false
+        if (!failure.looksCorrupt()) return false
 
-            runCatching { AppDatabase.reset() }
-            repositoryRef = null
-            runCatching { deleteDatabase(AppDatabase.DB_NAME) }
-            runCatching {
-                val dir = getExternalFilesDir("crash") ?: File(filesDir, "crash")
-                if (!dir.exists()) dir.mkdirs()
-                File(dir, "database-reset.txt").writeText(
-                    buildString {
-                        append("书架数据库损坏，已自动重置\n")
-                        append("时间: ")
-                        append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
-                        append("\n\n")
-                        append(failure.stackTraceToString())
-                    }
-                )
-            }
+        runCatching { AppDatabase.reset() }
+        repositoryRef = null
+        runCatching { deleteDatabase(AppDatabase.DB_NAME) }
+        runCatching {
+            val dir = getExternalFilesDir("crash") ?: File(filesDir, "crash")
+            if (!dir.exists()) dir.mkdirs()
+            File(dir, "database-reset.txt").writeText(
+                buildString {
+                    append("书架数据库损坏，已自动重置\n")
+                    append("时间: ")
+                    append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                    append("\n\n")
+                    append(failure.stackTraceToString())
+                }
+            )
         }
+        return true
     }
 
     private fun Throwable.looksCorrupt(): Boolean {

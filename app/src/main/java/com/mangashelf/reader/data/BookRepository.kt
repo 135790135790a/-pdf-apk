@@ -10,6 +10,7 @@ import java.io.File
 class BookRepository(
     private val dao: BookDao,
     private val pageDao: PageDao,
+    private val taskDao: ImportTaskDao,
     val storage: ComicStorage
 ) {
 
@@ -187,4 +188,50 @@ class BookRepository(
     }
 
     fun coverPath(book: Book): String = storage.coverPath(book.folder)
+
+    // ---------------------------------------------------------------------
+    // 导入任务（v4）：让"导到一半被杀"这件事有据可查
+    // ---------------------------------------------------------------------
+
+    suspend fun enqueueTasks(tasks: List<ImportTask>): List<Long> = withContext(Dispatchers.IO) {
+        taskDao.insertAll(tasks)
+    }
+
+    suspend fun taskStatus(id: Long, status: String, error: String? = null) =
+        withContext(Dispatchers.IO) {
+            taskDao.setStatus(id, status, error, System.currentTimeMillis())
+        }
+
+    /** 上次进程死掉时没跑完的任务（PENDING / RUNNING） */
+    suspend fun unfinishedTasks(): List<ImportTask> = withContext(Dispatchers.IO) {
+        taskDao.unfinished()
+    }
+
+    suspend fun tasksOfBatch(batchId: String): List<ImportTask> = withContext(Dispatchers.IO) {
+        taskDao.byBatch(batchId)
+    }
+
+    /** 把一批里没跑完的标成失败，并记下原因 */
+    suspend fun failUnfinished(batchId: String, reason: String) = withContext(Dispatchers.IO) {
+        taskDao.failUnfinished(batchId, ImportTask.FAILED, reason, System.currentTimeMillis())
+    }
+
+    /** 重试前把失败项恢复成待办 */
+    suspend fun resetFailed(batchId: String) = withContext(Dispatchers.IO) {
+        taskDao.resetFailed(batchId, System.currentTimeMillis())
+    }
+
+    suspend fun cancelPending(batchId: String) = withContext(Dispatchers.IO) {
+        taskDao.cancelPending(batchId, ImportTask.CANCELLED, System.currentTimeMillis())
+    }
+
+    /** 任务表只留最近 30 天，避免无限增长 */
+    suspend fun pruneTasks() = withContext(Dispatchers.IO) {
+        taskDao.pruneBefore(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000)
+    }
+
+    /** 删掉没有对应书籍的残留目录（只在启动时、无导入进行中时调用） */
+    suspend fun cleanupOrphanFolders(): Int = withContext(Dispatchers.IO) {
+        runCatching { storage.cleanupOrphans(dao.allFolders().toSet()) }.getOrDefault(0)
+    }
 }

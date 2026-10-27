@@ -4,6 +4,37 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v3 → v4：新增 import_tasks 表，让导入队列能活过进程被杀。
+ *
+ * 纯新增表，不碰任何既有数据；表结构必须与 Room 从 [ImportTask] 生成的 SQL 逐字符一致
+ * （列顺序、NOT NULL、AUTOINCREMENT、索引名 index_<table>_<column>）。
+ */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `import_tasks` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `batchId` TEXT NOT NULL,
+                `title` TEXT NOT NULL,
+                `sourceKey` TEXT,
+                `sourceTreeUri` TEXT,
+                `sourceType` TEXT NOT NULL,
+                `sortIndex` INTEGER NOT NULL,
+                `status` TEXT NOT NULL,
+                `error` TEXT,
+                `createdAt` INTEGER NOT NULL,
+                `updatedAt` INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_import_tasks_batchId` ON `import_tasks` (`batchId`)"
+        )
+    }
+}
+
+/**
  * v2 → v3：给 pages 加 originName（原始文件名），供「按名称排序」。
  *
  * 同样用重建表：`ALTER TABLE ... ADD COLUMN originName TEXT NOT NULL DEFAULT ''`

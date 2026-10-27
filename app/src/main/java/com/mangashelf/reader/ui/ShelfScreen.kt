@@ -50,6 +50,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -103,6 +104,7 @@ fun ShelfScreen(
     val importState by viewModel.importState.collectAsStateWithLifecycle()
     val order by viewModel.order.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
+    val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
 
     // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
     // 真正切到后台时靠 ImportForegroundService 保命，两者配合。
@@ -399,6 +401,21 @@ fun ShelfScreen(
                     }
                 )
             }
+
+            // 上次导入被系统打断（进程被回收/用户强杀）：说清楚差几本，并给重试入口。
+            // 只在没有导入在跑的时候显示，免得和进行中的进度条打架。
+            interrupted?.let { info ->
+                if (!importing) {
+                    InterruptedBanner(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(start = 16.dp, end = 16.dp, bottom = 96.dp),
+                        info = info,
+                        onRetry = { viewModel.retryInterrupted() },
+                        onDismiss = { viewModel.dismissInterrupted() }
+                    )
+                }
+            }
         }
     }
 
@@ -581,7 +598,15 @@ fun ShelfScreen(
                 title = { Text(if (state.cancelled) "已取消" else "批量导入完成") },
                 text = { Text(parts.joinToString("，")) },
                 confirmButton = {
-                    TextButton(onClick = { viewModel.dismissImportDialog() }) { Text("好") }
+                    Row {
+                        // 有失败项才给重试入口，否则"重试"按钮点了也没事发生
+                        if (state.failed > 0 && state.batchId != null) {
+                            TextButton(onClick = { viewModel.retryFailedOf(state) }) {
+                                Text("重试失败项")
+                            }
+                        }
+                        TextButton(onClick = { viewModel.dismissImportDialog() }) { Text("好") }
+                    }
                 }
             )
         }
@@ -889,8 +914,7 @@ private fun PageOrderDialog(
 }
 
 @Composable
-private fun SafeModeBanner(modifier: Modifier = Modifier, onExport: () -> Unit) {
-    Row(
+private fun SafeModeBanner(modifier: Modifier = Modifier, onExport: () -> Unit) {    Row(
         modifier = modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
@@ -905,6 +929,50 @@ private fun SafeModeBanner(modifier: Modifier = Modifier, onExport: () -> Unit) 
         )
         TextButton(onClick = onExport) {
             Text("导出诊断包", color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/**
+ * 上次导入被打断后的提示条。
+ *
+ * 只陈述事实（差几本、哪几本）并给两个出口，不做自动重试：
+ * 自动重试会在用户不知情的情况下占用前台服务和存储，反而更吓人。
+ */
+@Composable
+private fun InterruptedBanner(
+    modifier: Modifier = Modifier,
+    info: InterruptedBatch,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 3.dp
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(
+                text = "上次有 ${info.count} 本没导完",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (info.titles.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = info.titles.joinToString("、") +
+                        if (info.count > info.titles.size) " 等" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onRetry) { Text("重试") }
+                TextButton(onClick = onDismiss) { Text("跳过") }
+            }
         }
     }
 }
