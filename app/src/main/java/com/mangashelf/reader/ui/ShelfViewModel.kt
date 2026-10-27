@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.documentfile.provider.DocumentFile
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.GalleryExporter
+import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.ImportTask
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.data.PageSource
@@ -83,6 +85,13 @@ private class QueueItem(
     val key: String?
 )
 
+/** 导出到相册的进度 */
+data class SaveState(
+    val title: String,
+    val done: Int,
+    val total: Int
+)
+
 class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as MangaShelfApp).repository
@@ -123,6 +132,18 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
+
+    /** 导出到相册的进度（null = 没有在导出） */
+    private val _saveState = MutableStateFlow<SaveState?>(null)
+    val saveState: StateFlow<SaveState?> = _saveState.asStateFlow()
+
+    /** 一次性提示（Toast），UI 消费后调 [clearMessage] */
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    fun clearMessage() {
+        _message.value = null
+    }
 
     private val _interrupted = MutableStateFlow<InterruptedBatch?>(null)
     /** 上次导入被系统打断时，书架顶部显示的提示 */
@@ -170,7 +191,11 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importImages(uris: List<Uri>) {
+    fun importImages(
+        uris: List<Uri>,
+        sortMode: PageSortMode = ImportSortPrefs.imageMode(context),
+        sortAsc: Boolean = ImportSortPrefs.imageAsc(context)
+    ) {
         if (uris.isEmpty()) return
         val title = if (uris.size == 1) {
             FileNames.displayName(context, uris.first())
@@ -183,14 +208,20 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         startImport(
             title = title,
             sourceType = "IMAGE",
-            estimate = { StorageGuard.forImages(uris.size) }
+            estimate = { StorageGuard.forImages(uris.size) },
+            sortMode = sortMode,
+            sortAsc = sortAsc
         ) { dir, progress ->
             ImageImporter.import(context, uris, dir, progress)
         }
     }
 
-    /** 整个文件夹 = 一本书（递归子目录，按相对路径自然排序） */
-    fun importFolder(treeUri: Uri) {
+    /** 整个文件夹 = 一本书（递归子目录，排序规则可在导入前临时指定） */
+    fun importFolder(
+        treeUri: Uri,
+        sortMode: PageSortMode = ImportSortPrefs.folderMode(context),
+        sortAsc: Boolean = ImportSortPrefs.folderAsc(context)
+    ) {
         val folderName = runCatching {
             DocumentFile.fromTreeUri(context, treeUri)?.name
         }.getOrNull()
@@ -200,7 +231,9 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             sourceKey = documentIdOf(treeUri),
             sourceType = "IMAGE",
             sourceTreeUri = treeUri.toString(),
-            estimate = { StorageGuard.forUnknown() }
+            estimate = { StorageGuard.forUnknown() },
+            sortMode = sortMode,
+            sortAsc = sortAsc
         ) { dir, progress ->
             FolderImporter.import(context, treeUri, dir, progress)
         }
@@ -450,17 +483,21 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 runCatching {
-                    repo.insertBook(
-                        Book(
-                            title = item.title,
-                            folder = folder,
-                            pageCount = pages.size,
-                            sourceKey = item.key,
-                            sourceTreeUri = uri.toString(),
-                            sourceType = "IMAGE"
-                        ),
-                        pages
+                    val book = Book(
+                        title = item.title,
+                        folder = folder,
+                        pageCount = pages.size,
+                        sourceKey = item.key,
+                        sourceTreeUri = uri.toString(),
+                        sourceType = "IMAGE"
                     )
+                    val bookId = repo.insertBook(book, pages)
+                    // 批量导入按「文件夹默认排序」统一处理，用户不必一本本调
+                    val mode = ImportSortPrefs.folderMode(context)
+                    if (mode != PageSortMode.FIXED) {
+                        runCatching { repo.applyPageOrder(book.copy(id = bookId), mode, ImportSortPrefs.folderAsc(context)) }
+                    }
+                    bookId
                 }.onSuccess {
                     imported++
                     if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.DONE)
@@ -510,6 +547,40 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repo.delete(book) }
     }
 
+    /**
+     * 把书页导出到相册。
+     *
+     * [allPages] 为 false 时只导封面（第一页），避免用户手滑把几百页塞满相册。
+     * 单张失败不中断，最后按成功张数给提示。
+     */
+    fun saveToGallery(book: Book, allPages: Boolean) {
+        if (_saveState.value != null) return
+        viewModelScope.launch {
+            val files = runCatching { repo.pageFiles(book) }.getOrDefault(emptyList())
+            val chosen = if (allPages) files else files.take(1)
+            if (chosen.isEmpty()) {
+                _message.value = "这本书没有可导出的页面"
+                return@launch
+            }
+            _saveState.value = SaveState(book.title, 0, chosen.size)
+            val result = runCatching {
+                GalleryExporter.export(context, book.title, chosen) { done, total ->
+                    _saveState.value = SaveState(book.title, done, total)
+                }
+            }
+            _saveState.value = null
+            result.onSuccess { saved ->
+                _message.value = if (saved > 0) {
+                    "已保存 $saved 张到相册 Pictures/MangaShelf"
+                } else {
+                    "保存失败：相册写入被拒绝，检查存储空间或权限"
+                }
+            }.onFailure { t ->
+                _message.value = "保存失败：${t.message ?: "未知错误"}"
+            }
+        }
+    }
+
     fun renameBook(book: Book, title: String) {
         viewModelScope.launch { repo.rename(book.id, title) }
     }
@@ -536,6 +607,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         sourceType: String = "FIXED",
         sourceTreeUri: String? = null,
         estimate: (suspend () -> Long)? = null,
+        sortMode: PageSortMode = PageSortMode.NATURAL,
+        sortAsc: Boolean = true,
         work: suspend (File, (Int, Int) -> Unit) -> List<PageSource>
     ) {
         if (isBusy()) return
@@ -587,17 +660,22 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 if (pages.isEmpty()) throw IllegalStateException("没有读到任何页面，请确认文件是否损坏")
-                repo.insertBook(
-                    Book(
-                        title = title,
-                        folder = folder,
-                        pageCount = pages.size,
-                        sourceKey = sourceKey,
-                        sourceTreeUri = sourceTreeUri,
-                        sourceType = sourceType
-                    ),
-                    pages
+                val book = Book(
+                    title = title,
+                    folder = folder,
+                    pageCount = pages.size,
+                    sourceKey = sourceKey,
+                    sourceTreeUri = sourceTreeUri,
+                    sourceType = sourceType
                 )
+                val bookId = repo.insertBook(book, pages)
+                // 按导入时选定的规则重排页序（FIXED = 保持文件名顺序，不重排）。
+                // 重排失败不算导入失败：页已经落盘入库，用户之后还能在「页序」里再改一次。
+                if (sortMode != PageSortMode.FIXED) {
+                    runCatching {
+                        repo.applyPageOrder(book.copy(id = bookId), sortMode, sortAsc)
+                    }
+                }
                 if (taskId > 0) repo.taskStatus(taskId, ImportTask.DONE)
                 _importState.value = ImportUiState.Idle
             } catch (t: Throwable) {

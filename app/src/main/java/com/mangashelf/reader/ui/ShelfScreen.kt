@@ -2,6 +2,10 @@ package com.mangashelf.reader.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.Manifest
+import android.net.Uri
+import android.os.Build
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,6 +45,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,6 +78,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -83,6 +89,7 @@ import coil.compose.AsyncImage
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.data.Diagnostics
+import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.ui.theme.ComicScrim
 import com.mangashelf.reader.ui.theme.ThemeMode
@@ -116,12 +123,21 @@ fun ShelfScreen(
     }
 
     var showImportDialog by remember { mutableStateOf(false) }
+    // 导入前的排序选择（图片/文件夹两种来源各自记默认值）
+    var pendingSort by remember { mutableStateOf<PendingImport?>(null) }
+    // 长按「保存到相册」要导整本还是只导封面
+    var saveChoiceBookId by remember { mutableStateOf<Long?>(null) }
+    // Android 9 及以下写相册要先要存储权限；等授权时把待保存的参数缓存起来
+    var pendingSave by remember { mutableStateOf<Pair<Book, Boolean>?>(null) }
+    val saveState by viewModel.saveState.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
     // 搜索：点放大镜展开输入框，再点关闭收起。收起时清空关键词，书架恢复完整。
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var searchText by rememberSaveable { mutableStateOf("") }
     val searchFocus = remember { FocusRequester() }
     var showSortMenu by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
+    var showImportSortSettings by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
     var pageOrderBookId by remember { mutableStateOf<Long?>(null) }
     var pendingZip by remember { mutableStateOf<File?>(null) }
@@ -169,10 +185,10 @@ fun ShelfScreen(
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        if (uris.isNotEmpty()) viewModel.importImages(uris)
+        if (uris.isNotEmpty()) pendingSort = PendingImport.Images(uris)
     }
 
-    // 选一个文件夹 → 整个文件夹成一本书（递归子目录，按相对路径自然排序）
+    // 选一个文件夹 → 整个文件夹成一本书（排序规则在弹窗里选，默认取上次的设置）
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -183,7 +199,7 @@ fun ShelfScreen(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             }
-            viewModel.importFolder(uri)
+            pendingSort = PendingImport.Folder(uri)
         }
     }
 
@@ -206,6 +222,37 @@ fun ShelfScreen(
     val launchImages = { imagePicker.launch(arrayOf("image/*")) }
     val launchFolder = { folderPicker.launch(null) }
     val launchBatch = { batchPicker.launch(null) }
+
+    // 保存到相册：10+ 直接写；9- 先申请 WRITE_EXTERNAL_STORAGE
+    val storagePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val pending = pendingSave
+        pendingSave = null
+        if (pending == null) return@rememberLauncherForActivityResult
+        if (granted) {
+            viewModel.saveToGallery(pending.first, pending.second)
+        } else {
+            Toast.makeText(
+                context,
+                "没有存储权限，写不进相册。可以在系统设置里给本应用开启后重试。",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    val startSave: (Book, Boolean) -> Unit = { book, allPages ->
+        val needPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needPermission) {
+            pendingSave = book to allPages
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            viewModel.saveToGallery(book, allPages)
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -319,6 +366,10 @@ fun ShelfScreen(
                                 )
                             }
                         }
+                    }
+                    // 导入默认排序（文件夹 / 图片分开设置）
+                    TextButton(onClick = { showImportSortSettings = true }) {
+                        Text("导入排序", color = MaterialTheme.colorScheme.onBackground)
                     }
                 }
             )
@@ -633,11 +684,101 @@ fun ShelfScreen(
             onRename = { title -> viewModel.renameBook(optionsBook, title) },
             onToggleDirection = { viewModel.toggleDirection(optionsBook) },
             onOpenPageOrder = { pageOrderBookId = optionsBook.id },
+            onSaveToGallery = {
+                saveChoiceBookId = optionsBook.id
+                optionsBookId = null
+            },
             onDelete = {
                 viewModel.deleteBook(optionsBook)
                 optionsBookId = null
             }
         )
+    }
+
+    // 保存到相册：先问范围，避免手滑把几百页塞进相册
+    val saveBook = books.firstOrNull { it.id == saveChoiceBookId }
+    if (saveBook != null) {
+        AlertDialog(
+            onDismissRequest = { saveChoiceBookId = null },
+            title = { Text("保存到相册") },
+            text = {
+                Text("《${saveBook.title}》共 ${saveBook.pageCount} 页。\n导出到 Pictures/MangaShelf，相册里能直接看。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    startSave(saveBook, true)
+                    saveChoiceBookId = null
+                }) { Text("全部 ${saveBook.pageCount} 页") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { saveChoiceBookId = null }) { Text("取消") }
+                    TextButton(onClick = {
+                        startSave(saveBook, false)
+                        saveChoiceBookId = null
+                    }) { Text("只存封面") }
+                }
+            }
+        )
+    }
+
+    // 导出进度：不可取消，但显示到第几张，避免用户以为卡死
+    val saving = saveState
+    if (saving != null) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("正在保存到相册") },
+            text = {
+                Column {
+                    Text("《${saving.title}》 ${saving.done}/${saving.total}")
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = {
+                            if (saving.total == 0) 0f else saving.done.toFloat() / saving.total
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = { }
+        )
+    }
+
+    // Toast 型提示统一从这里出
+    LaunchedEffect(message) {        val text = message ?: return@LaunchedEffect
+        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+        viewModel.clearMessage()
+    }
+
+    // 导入前的排序选择
+    val pending = pendingSort
+    if (pending != null) {
+        val isFolder = pending is PendingImport.Folder
+        ImportSortDialog(
+            isFolder = isFolder,
+            initialMode = if (isFolder) {
+                ImportSortPrefs.folderMode(context)
+            } else {
+                ImportSortPrefs.imageMode(context)
+            },
+            initialAsc = if (isFolder) {
+                ImportSortPrefs.folderAsc(context)
+            } else {
+                ImportSortPrefs.imageAsc(context)
+            },
+            onConfirm = { mode, asc ->
+                when (pending) {
+                    is PendingImport.Images -> viewModel.importImages(pending.uris, mode, asc)
+                    is PendingImport.Folder -> viewModel.importFolder(pending.uri, mode, asc)
+                }
+                pendingSort = null
+            },
+            onDismiss = { pendingSort = null }
+        )
+    }
+
+    if (showImportSortSettings) {
+        ImportSortSettingsDialog(onDismiss = { showImportSortSettings = false })
     }
 
     val pageOrderBook = books.firstOrNull { it.id == pageOrderBookId }
@@ -788,6 +929,7 @@ private fun BookOptionsDialog(
     onRename: (String) -> Unit,
     onToggleDirection: () -> Unit,
     onOpenPageOrder: () -> Unit,
+    onSaveToGallery: () -> Unit,
     onDelete: () -> Unit
 ) {
     var title by remember(book.id) { mutableStateOf(book.title) }
@@ -822,6 +964,9 @@ private fun BookOptionsDialog(
                 )
                 TextButton(onClick = onOpenPageOrder) {
                     Text("调整页面顺序")
+                }
+                TextButton(onClick = onSaveToGallery) {
+                    Text("保存到相册")
                 }
                 TextButton(onClick = onDelete) {
                     Text("从书架删除", color = MaterialTheme.colorScheme.error)
@@ -973,6 +1118,164 @@ private fun InterruptedBanner(
                 TextButton(onClick = onRetry) { Text("重试") }
                 TextButton(onClick = onDismiss) { Text("跳过") }
             }
+        }
+    }
+}
+
+/** 等用户选排序规则的待导入项（选完文件、还没开始导） */
+private sealed interface PendingImport {
+    data class Images(val uris: List<Uri>) : PendingImport
+    data class Folder(val uri: Uri) : PendingImport
+}
+
+/**
+ * 导入前的排序选择。
+ *
+ * 默认值取「上次用的规则」，用户改一次只影响这一次；要改长期默认请去菜单里的
+ * 「导入排序设置」——分开是刻意的，免得一次例外把习惯改掉。
+ */
+@Composable
+private fun ImportSortDialog(
+    isFolder: Boolean,
+    initialMode: PageSortMode,
+    initialAsc: Boolean,
+    onConfirm: (PageSortMode, Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var mode by remember { mutableStateOf(initialMode) }
+    var asc by remember { mutableStateOf(initialAsc) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isFolder) "文件夹排序" else "图片排序") },
+        text = {
+            Column {
+                Text(
+                    text = "按什么顺序排页。之后也能在书的菜单里改。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                ImportSortPrefs.choices.forEach { choice ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { mode = choice }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = mode == choice, onClick = { mode = choice })
+                        Column(modifier = Modifier.padding(start = 2.dp)) {
+                            Text(choice.label, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                choice.hint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = asc, onCheckedChange = { asc = it })
+                    Text(
+                        text = if (asc) "升序" else "降序",
+                        modifier = Modifier.padding(start = 10.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(mode, asc) }) { Text("开始导入") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/**
+ * 导入默认排序设置：文件夹和图片分开配，互不影响。
+ */
+@Composable
+private fun ImportSortSettingsDialog(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导入排序设置") },
+        text = {
+            Column {
+                Text(
+                    text = "下次导入时默认用这套规则，导入前还能临时改。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                ImportSortSection(
+                    label = "文件夹",
+                    initialMode = ImportSortPrefs.folderMode(context),
+                    initialAsc = ImportSortPrefs.folderAsc(context),
+                    onChange = { mode, asc -> ImportSortPrefs.saveFolder(context, mode, asc) }
+                )
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                ImportSortSection(
+                    label = "图片",
+                    initialMode = ImportSortPrefs.imageMode(context),
+                    initialAsc = ImportSortPrefs.imageAsc(context),
+                    onChange = { mode, asc -> ImportSortPrefs.saveImage(context, mode, asc) }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
+}
+
+@Composable
+private fun ImportSortSection(
+    label: String,
+    initialMode: PageSortMode,
+    initialAsc: Boolean,
+    onChange: (PageSortMode, Boolean) -> Unit
+) {
+    var mode by remember { mutableStateOf(initialMode) }
+    var asc by remember { mutableStateOf(initialAsc) }
+
+    Column {
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ImportSortPrefs.choices.forEach { choice ->
+                FilterChip(
+                    selected = mode == choice,
+                    onClick = {
+                        mode = choice
+                        onChange(choice, asc)
+                    },
+                    label = { Text(choice.label) }
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = if (asc) "升序" else "降序",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(end = 8.dp)
+            )
+            Switch(
+                checked = asc,
+                onCheckedChange = {
+                    asc = it
+                    onChange(mode, it)
+                }
+            )
         }
     }
 }

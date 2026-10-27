@@ -22,8 +22,8 @@ enum class PageSortMode(
     /** 源文件大小 */
     SIZE("文件大小", "按源文件体积，小的在前", true),
 
-    /** 固定：保持导入时的顺序，不参与重排 */
-    FIXED("固定（不排序）", "保持首次导入时的顺序", true);
+    /** 固定：保持导入时的顺序，不参与重排（导入时选它 = 按读取到的顺序原样入库） */
+    FIXED("导入顺序", "保持读取到的顺序，不做重排", true);
 
     companion object {
         fun fromStorage(raw: String?): PageSortMode =
