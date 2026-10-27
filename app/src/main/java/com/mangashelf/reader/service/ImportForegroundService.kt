@@ -30,7 +30,15 @@ class ImportForegroundService : Service() {
         fun start(context: Context, text: String) {
             val intent = Intent(context, ImportForegroundService::class.java)
                 .putExtra(EXTRA_TEXT, text)
-            runCatching { context.startForegroundService(intent) }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    // Android 7.x 没有 startForegroundService，用普通 startService；
+                    // 7.x 还没有后台执行限制，进程保命效果一样。
+                    context.startService(intent)
+                }
+            }
         }
 
         fun stop(context: Context) {
