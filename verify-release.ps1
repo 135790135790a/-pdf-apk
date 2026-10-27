@@ -128,15 +128,23 @@ if ($targetSdk -ne $expTarget) { $problems.Add("targetSdk 是 $targetSdk，期�
 # 另外三条是 1.5.1 起为「导入不被打断」加的前台服务权限：
 # FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC 是启动前台服务的准入，
 # POST_NOTIFICATIONS 只为了让导入进度通知能被看见——都不是存储权限。
+# 最后两条是 1.5.2 起为「保存到相册」加的：只对 Android 9 及以下生效
+# （maxSdkVersion=28），Android 10+ 走 MediaStore 不需要任何权限。
 $permWhitelist = @(
     "$pkg.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
     'android.permission.FOREGROUND_SERVICE',
     'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
-    'android.permission.POST_NOTIFICATIONS'
+    'android.permission.POST_NOTIFICATIONS',
+    'android.permission.WRITE_EXTERNAL_STORAGE',
+    'android.permission.READ_EXTERNAL_STORAGE'
 )
+# 注意：带 maxSdkVersion 的权限在 badging 里是
+#   uses-permission: name='...' maxSdkVersion='28'
+# 所以只取 name='...' 里的名字，不能整行去掉首尾引号。
 $permNames = @($badging |
     Where-Object { $_ -match "^uses-permission:" } |
-    ForEach-Object { ($_ -replace "^uses-permission:\s*", '') -replace "^name='", '' -replace "'$", '' })
+    ForEach-Object { if ($_ -match "name='([^']+)'") { $matches[1] } } |
+    Where-Object { $_ })
 $permBad = @($permNames | Where-Object { $permWhitelist -notcontains $_ })
 if ($permBad.Count -gt 0) {
     $problems.Add("APK 声明了 $($permBad.Count) 条不该有的权限：`n      " + ($permBad -join "`n      "))

@@ -1,6 +1,8 @@
 package com.mangashelf.reader.data
 
 import com.mangashelf.reader.importer.FolderImporter
+import android.content.Context
+import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -13,6 +15,24 @@ class BookRepository(
     private val taskDao: ImportTaskDao,
     val storage: ComicStorage
 ) {
+
+    /** 整库备份（含图片），见 [BackupManager] */
+    suspend fun exportBackup(
+        context: Context,
+        target: Uri,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): BackupManager.ExportResult = withContext(Dispatchers.IO) {
+        BackupManager.export(context, storage, dao.allBooks(), pageDao, target, onProgress)
+    }
+
+    /** 从备份恢复（不覆盖现有书，冲突时重新分配目录） */
+    suspend fun restoreBackup(
+        context: Context,
+        source: Uri,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): BackupManager.RestoreResult = withContext(Dispatchers.IO) {
+        BackupManager.restore(context, storage, this@BookRepository, source, onProgress)
+    }
 
     /**
      * 书架列表。查询出错（数据库文件异常、磁盘 IO 错误）时吞掉异常返回空列表，

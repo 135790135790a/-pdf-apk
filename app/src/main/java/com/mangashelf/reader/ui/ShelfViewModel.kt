@@ -92,6 +92,13 @@ data class SaveState(
     val total: Int
 )
 
+/** 备份 / 恢复的进度（total = 0 表示进度不可知） */
+data class BackupState(
+    val label: String,
+    val done: Int,
+    val total: Int
+)
+
 class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as MangaShelfApp).repository
@@ -140,6 +147,55 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     /** 一次性提示（Toast），UI 消费后调 [clearMessage] */
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /** 备份 / 恢复进度 */
+    private val _backupState = MutableStateFlow<BackupState?>(null)
+    val backupState: StateFlow<BackupState?> = _backupState.asStateFlow()
+
+    /**
+     * 整库备份到用户选的文件（zip，含图片）。
+     *
+     * 这是"卸载重装后能拿回来"的本地方案：不依赖账号和服务器，
+     * 用户把 zip 放网盘/电脑，换机再导回来。
+     */
+    fun exportBackup(target: Uri) {
+        if (_backupState.value != null) return
+        viewModelScope.launch {
+            _backupState.value = BackupState("正在打包", 0, 0)
+            runCatching {
+                repo.exportBackup(context, target) { done, total ->
+                    _backupState.value = BackupState("正在打包", done, total)
+                }
+            }.onSuccess { r ->
+                val mb = r.bytes / 1024.0 / 1024.0
+                _message.value = "备份完成：${r.books} 本 / ${r.pages} 页，%.1f MB".format(mb)
+            }.onFailure { t ->
+                _message.value = "备份失败：${t.message ?: "未知错误"}"
+            }
+            _backupState.value = null
+        }
+    }
+
+    /** 从备份 zip 恢复（图片一起恢复，书名重复也不覆盖现有书） */
+    fun restoreBackup(source: Uri) {
+        if (_backupState.value != null) return
+        viewModelScope.launch {
+            _backupState.value = BackupState("正在恢复", 0, 0)
+            runCatching {
+                repo.restoreBackup(context, source) { done, total ->
+                    _backupState.value = BackupState("正在恢复", done, total)
+                }
+            }.onSuccess { r ->
+                _message.value = buildString {
+                    append("恢复完成：${r.books} 本 / ${r.pages} 页")
+                    if (r.skipped > 0) append("，${r.skipped} 本缺文件已跳过")
+                }
+            }.onFailure { t ->
+                _message.value = "恢复失败：${t.message ?: "文件不是有效备份"}"
+            }
+            _backupState.value = null
+        }
+    }
 
     fun clearMessage() {
         _message.value = null

@@ -37,4 +37,8 @@ interface BookDao {
     /** 启动时清理孤儿目录用：这些目录还要，其余的可以删 */
     @Query("SELECT folder FROM books")
     suspend fun allFolders(): List<String>
+
+    /** 备份用：一次性拿全部书（不走 Flow） */
+    @Query("SELECT * FROM books ORDER BY createdAt ASC")
+    suspend fun allBooks(): List<Book>
 }

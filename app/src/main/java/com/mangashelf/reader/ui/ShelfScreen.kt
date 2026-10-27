@@ -94,6 +94,9 @@ import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.ui.theme.ComicScrim
 import com.mangashelf.reader.ui.theme.ThemeMode
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -138,6 +141,7 @@ fun ShelfScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
     var showImportSortSettings by remember { mutableStateOf(false) }
+    var showBackupMenu by remember { mutableStateOf(false) }
     var optionsBookId by remember { mutableStateOf<Long?>(null) }
     var pageOrderBookId by remember { mutableStateOf<Long?>(null) }
     var pendingZip by remember { mutableStateOf<File?>(null) }
@@ -222,6 +226,19 @@ fun ShelfScreen(
     val launchImages = { imagePicker.launch(arrayOf("image/*")) }
     val launchFolder = { folderPicker.launch(null) }
     val launchBatch = { batchPicker.launch(null) }
+
+    // 备份 = 一个 zip（含图片）。存到用户选的位置，不依赖账号或服务器
+    val backupState by viewModel.backupState.collectAsStateWithLifecycle()
+    val backupCreate = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) viewModel.exportBackup(uri)
+    }
+    val backupOpen = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.restoreBackup(uri)
+    }
 
     // 保存到相册：10+ 直接写；9- 先申请 WRITE_EXTERNAL_STORAGE
     val storagePermission = rememberLauncherForActivityResult(
@@ -370,6 +387,33 @@ fun ShelfScreen(
                     // 导入默认排序（文件夹 / 图片分开设置）
                     TextButton(onClick = { showImportSortSettings = true }) {
                         Text("导入排序", color = MaterialTheme.colorScheme.onBackground)
+                    }
+                    // 整库备份 / 恢复（含图片）
+                    Box {
+                        TextButton(onClick = { showBackupMenu = true }) {
+                            Text("备份", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(
+                            expanded = showBackupMenu,
+                            onDismissRequest = { showBackupMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("导出备份（含图片）") },
+                                onClick = {
+                                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)
+                                        .format(Date())
+                                    backupCreate.launch("漫画书架备份-$stamp.zip")
+                                    showBackupMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("从备份恢复") },
+                                onClick = {
+                                    backupOpen.launch(arrayOf("*/*"))
+                                    showBackupMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -735,6 +779,34 @@ fun ShelfScreen(
                     LinearProgressIndicator(
                         progress = {
                             if (saving.total == 0) 0f else saving.done.toFloat() / saving.total
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = { }
+        )
+    }
+
+    // 备份 / 恢复进度
+    val backingUp = backupState
+    if (backingUp != null) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(backingUp.label) },
+            text = {
+                Column {
+                    Text(
+                        if (backingUp.total > 0) {
+                            "${backingUp.done}/${backingUp.total}"
+                        } else {
+                            "正在处理，备份包含图片，书多时会慢一些…"
+                        }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = {
+                            if (backingUp.total == 0) 0f else backingUp.done.toFloat() / backingUp.total
                         },
                         modifier = Modifier.fillMaxWidth()
                     )
