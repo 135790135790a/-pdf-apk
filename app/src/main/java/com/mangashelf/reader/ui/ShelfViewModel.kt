@@ -133,6 +133,17 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * 书架顶部「继续阅读」用：最近读过、且还没翻到最后一页的那本。
+     * 搜索时不动它——搜索是在找别的书，顶部再挂一张"继续上次"的卡片只会碍事。
+     */
+    val continueBook: StateFlow<Book?> = combine(repo.observeBooks(), _query) { list, keyword ->
+        if (keyword.isNotBlank()) return@combine null
+        list.asSequence()
+            .filter { it.lastReadAt > 0L && it.pageCount > 1 && it.lastPage < it.pageCount - 1 }
+            .maxByOrNull { it.lastReadAt }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /** 边打字边过滤，不需要额外点搜索按钮 */
     fun setQuery(keyword: String) {
         _query.value = keyword

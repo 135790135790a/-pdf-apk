@@ -6,8 +6,8 @@ import java.util.Locale
 
 /** 书架排序依据。顺序即菜单里的显示顺序。 */
 enum class ShelfSort(val label: String, val defaultAsc: Boolean) {
-    /** 新导入的在前 */
-    RECENT("导入时间", false),
+    /** 最近读过的在前；没读过的按导入时间排 */
+    RECENT("最近阅读", false),
 
     /** 按书名（中文按拼音，混合英文也能排） */
     TITLE("书名", true),
@@ -30,7 +30,11 @@ data class ShelfOrder(
     fun apply(books: List<Book>): List<Book> {
         if (books.size <= 1) return books
         val comparator: Comparator<Book> = when (sort) {
-            ShelfSort.RECENT -> compareBy { it.createdAt }
+            // 读过的按最后阅读时间，从没读过的退回导入时间——否则新导入的书会被老书压下去
+            ShelfSort.RECENT -> Comparator { a, b ->
+                a.recentKey().compareTo(b.recentKey())
+            }
+
             ShelfSort.TITLE -> Comparator { a, b -> collator.compare(a.title, b.title) }
             ShelfSort.PAGES -> compareBy { it.pageCount }
         }
@@ -39,6 +43,9 @@ data class ShelfOrder(
     }
 
     fun storageKey(): String = "${sort.name}:$asc"
+
+    /** 排序用的时间戳：读过用最后阅读时间，没读过用导入时间 */
+    private fun Book.recentKey(): Long = if (lastReadAt > 0L) lastReadAt else createdAt
 
     companion object {
         private val collator: Collator = Collator.getInstance(Locale.CHINA)

@@ -93,10 +93,21 @@ class BookRepository(
         if (book.rtl != rtl) dao.update(book.copy(rtl = rtl))
     }
 
+    /** 双页模式按书存：跨页大图的书适合双页，普通单页漫画还是单页清楚 */
+    suspend fun setTwoPage(bookId: Long, twoPage: Boolean) {
+        val book = dao.get(bookId) ?: return
+        if (book.twoPage != twoPage) dao.update(book.copy(twoPage = twoPage))
+    }
+
     suspend fun saveProgress(bookId: Long, page: Int) {
         val book = dao.get(bookId) ?: return
         val clamped = page.coerceIn(0, (book.pageCount - 1).coerceAtLeast(0))
-        if (book.lastPage != clamped) dao.update(book.copy(lastPage = clamped))
+        val now = System.currentTimeMillis()
+        // 除了页码，还要记"最后阅读时间"：书架「最近阅读」排序和顶部「继续阅读」卡片都靠它。
+        // 30 秒节流——同一本书连续翻页时不重复写库，但隔一会儿再看总会刷新一次。
+        if (book.lastPage != clamped || now - book.lastReadAt > 30_000L) {
+            dao.update(book.copy(lastPage = clamped, lastReadAt = now))
+        }
     }
 
     // ---------------------------------------------------------------------

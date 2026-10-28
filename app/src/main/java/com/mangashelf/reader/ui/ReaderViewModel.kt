@@ -33,6 +33,10 @@ class ReaderViewModel(
     fun setRtl(rtl: Boolean) {
         viewModelScope.launch { repo.setRtl(bookId, rtl) }
     }
+
+    fun setTwoPage(twoPage: Boolean) {
+        viewModelScope.launch { repo.setTwoPage(bookId, twoPage) }
+    }
 }
 
 class ReaderViewModelFactory(

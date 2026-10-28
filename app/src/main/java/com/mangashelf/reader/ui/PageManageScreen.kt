@@ -6,8 +6,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,16 +50,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -67,6 +76,7 @@ import coil.request.ImageRequest
 import com.mangashelf.reader.data.PageEntry
 import com.mangashelf.reader.data.PageSortMode
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * 页面管理（v1.5.3）：
@@ -96,6 +106,8 @@ fun PageManageScreen(
     val snackbar = remember { SnackbarHostState() }
     var sortMenu by remember { mutableStateOf(false) }
     var confirmPurge by remember { mutableStateOf(false) }
+    // 排序模式：拖格子调顺序。平时关掉，避免和「点选/滚动」抢手势
+    var reorderMode by remember { mutableStateOf(false) }
 
     LaunchedEffect(message) {
         message?.let {
@@ -180,6 +192,16 @@ fun PageManageScreen(
                                         vm.resetOrder()
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(if (reorderMode) "退出排序模式" else "排序模式（拖动调整）")
+                                    },
+                                    onClick = {
+                                        sortMenu = false
+                                        reorderMode = !reorderMode
+                                        if (!reorderMode) vm.clearSelection()
+                                    }
+                                )
                                 if (deleted.isNotEmpty()) {
                                     DropdownMenuItem(
                                         text = { Text("恢复回收站的 ${deleted.size} 页") },
@@ -213,6 +235,8 @@ fun PageManageScreen(
                     busy = busy,
                     onMoveUp = { vm.moveSelected(-1) },
                     onMoveDown = { vm.moveSelected(1) },
+                    onMoveTop = { vm.moveSelectedTo(-1) },
+                    onMoveBottom = { vm.moveSelectedTo(1) },
                     onCover = {
                         val position = visible.indexOfFirst { it.id == selected.first() }
                         if (position >= 0) vm.setCover(position)
@@ -247,7 +271,26 @@ fun PageManageScreen(
                         index = indexById[page.id] ?: -1,
                         checked = page.id in selected,
                         thumbPath = thumb,
+                        dragEnabled = reorderMode && page.deleted == 0,
+                        onDragBy = { d -> vm.movePage(page.id, d) },
                         onClick = { vm.toggle(page.id) }
+                    )
+                }
+            }
+
+            if (reorderMode) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                ) {
+                    Text(
+                        text = "排序模式：长按缩略图拖动",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                     )
                 }
             }
@@ -295,6 +338,9 @@ private fun PageCell(
     index: Int,
     checked: Boolean,
     thumbPath: String?,
+    dragEnabled: Boolean,
+    /** 拖动结束时回报位移：正数往后挪、负数往前挪（单位是"格"） */
+    onDragBy: (Int) -> Unit,
     onClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -312,16 +358,58 @@ private fun PageCell(
         }
     }
     val accent = MaterialTheme.colorScheme.primary
+    val currentOnDragBy by rememberUpdatedState(onDragBy)
+    // 拖动中的位移（像素）。松手时按格子尺寸换算成"挪了几格"
+    var drag by remember { mutableStateOf(Offset.Zero) }
+    var cellSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+    val dragSpacingPx = with(density) { 8.dp.toPx() }
+
+    val dragModifier = if (dragEnabled) {
+        Modifier
+            .onSizeChanged { cellSize = it }
+            .pointerInput(page.id, dragEnabled) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { drag = Offset.Zero },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        drag += amount
+                    },
+                    onDragEnd = {
+                        val moved = drag
+                        drag = Offset.Zero
+                        if (cellSize.width > 0 && cellSize.height > 0) {
+                            val colShift = (moved.x / (cellSize.width + dragSpacingPx)).roundToInt()
+                            val rowShift = (moved.y / (cellSize.height + dragSpacingPx)).roundToInt()
+                            val shift = rowShift * 3 + colShift
+                            if (shift != 0) currentOnDragBy(shift)
+                        }
+                    },
+                    onDragCancel = { drag = Offset.Zero }
+                )
+            }
+    } else {
+        Modifier.combinedClickable(onClick = onClick, onLongClick = onClick)
+    }
+
     Box(
         modifier = Modifier
             .aspectRatio(0.72f)
+            .graphicsLayer {
+                translationX = drag.x
+                translationY = drag.y
+                // 拖起来的那格放大一点、浮在上面，跟没拖的区分开
+                val lifted = if (drag == Offset.Zero) 1f else 1.06f
+                scaleX = lifted
+                scaleY = lifted
+            }
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
             .border(
                 width = if (checked) 3.dp else 1.dp,
                 color = if (checked) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
                 shape = RoundedCornerShape(10.dp)
             )
-            .combinedClickable(onClick = onClick, onLongClick = onClick)
+            .then(dragModifier)
             .alpha(if (page.deleted != 0) 0.45f else 1f)
             .padding(3.dp)
     ) {
@@ -365,6 +453,8 @@ private fun SelectionBar(
     busy: Boolean,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    onMoveTop: () -> Unit,
+    onMoveBottom: () -> Unit,
     onCover: () -> Unit,
     onDelete: () -> Unit,
     onRestore: () -> Unit
@@ -377,23 +467,37 @@ private fun SelectionBar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (anyDeleted) {
+            if (anyDeleted) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = onRestore, enabled = !busy) { Text("恢复") }
-                } else {
+                    if (busy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.width(18.dp).height(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+            } else {
+                // 排序动作单独一行，避免和"危险动作"挤在一起误触
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onMoveTop, enabled = !busy) { Text("置顶") }
                     TextButton(onClick = onMoveUp, enabled = !busy) { Text("上移") }
                     TextButton(onClick = onMoveDown, enabled = !busy) { Text("下移") }
+                    TextButton(onClick = onMoveBottom, enabled = !busy) { Text("置底") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     if (selectedCount == 1) {
                         TextButton(onClick = onCover, enabled = !busy) { Text("设为封面") }
                     }
                     TextButton(onClick = onDelete, enabled = !busy) { Text("移入回收站") }
-                }
-                Spacer(Modifier.width(4.dp))
-                if (busy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.width(18.dp).height(18.dp),
-                        strokeWidth = 2.dp
-                    )
+                    if (busy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.width(18.dp).height(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
                 }
             }
         }

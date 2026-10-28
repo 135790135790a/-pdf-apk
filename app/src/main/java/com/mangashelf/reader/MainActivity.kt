@@ -2,6 +2,7 @@ package com.mangashelf.reader
 
 import android.content.res.Configuration
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -57,6 +58,30 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 音量键翻页（v1.5.6）。
+     *
+     * 只在阅读器把回调挂到 [PageKeyBus] 时才拦截，其余界面原样交还给系统调音量。
+     * 返回 true 表示"这个按键我们消费掉了"，系统就不会再调音量。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val turn = com.mangashelf.reader.ui.PageKeyBus.onTurn
+        if (turn != null && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            when (event.keyCode) {
+                // 往下按 = 往后翻，符合"往下按就是下一页"的直觉
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    turn(true)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    turn(false)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     /**

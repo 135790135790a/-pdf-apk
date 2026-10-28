@@ -53,7 +53,20 @@ data class Book(
     val sourceSizeBytes: Long = 0L,
     /** 封面用第几页（0 基，指的是"未删除页里的第几个"）；被删则回退第一页 */
     @ColumnInfo(defaultValue = "0")
-    val coverPageIdx: Int = 0
+    val coverPageIdx: Int = 0,
+
+    // ---------------------------------------------------------------------
+    // v5 → v6 新增（见 Migrations.kt MIGRATION_5_6）
+    // 同样带 defaultValue，因为迁移走 ALTER TABLE ADD COLUMN。
+    // ---------------------------------------------------------------------
+
+    /** 最后一次打开这本书的时间；0 = 从没读过。书架「最近阅读」排序和「继续阅读」卡片用它 */
+    @ColumnInfo(defaultValue = "0")
+    val lastReadAt: Long = 0L,
+
+    /** 双页模式：一次显示两页（跨页大图、对开本漫画用）；阅读器里按书开关 */
+    @ColumnInfo(defaultValue = "0")
+    val twoPage: Boolean = false
 ) {
     val progressFraction: Float
         get() = if (pageCount <= 1) 0f else (lastPage.toFloat() / (pageCount - 1)).coerceIn(0f, 1f)

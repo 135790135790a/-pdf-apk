@@ -6,11 +6,14 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -29,6 +32,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,7 +58,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -107,8 +113,11 @@ import coil.request.ImageRequest
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.data.GalleryExporter
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -175,11 +184,18 @@ private fun ReaderContent(
     }
 
     val pageCount = pageList.size
+    // 双页模式：一个"跨页"放两张图，所以 Pager 的页数要减半（奇数页最后一张单独一屏）。
+    // 至少要有 2 页才值得开双页，只有 1 页时自动当单页处理。
+    val spread = book.twoPage && pageCount > 1
+    val slotCount = if (spread) (pageCount + 1) / 2 else pageCount
     val scope = rememberCoroutineScope()
     val pager = rememberPagerState(
-        initialPage = book.lastPage.coerceIn(0, pageCount - 1),
-        pageCount = { pageCount }
+        initialPage = ((if (spread) book.lastPage / 2 else book.lastPage))
+            .coerceIn(0, slotCount - 1),
+        pageCount = { slotCount }
     )
+    // 当前屏对应的第一页（0 基）。书签、保存、跳页都按真实页码走，不按跨页序号。
+    fun firstPageOf(slot: Int): Int = (if (spread) slot * 2 else slot).coerceIn(0, pageCount - 1)
     var chromeVisible by remember { mutableStateOf(true) }
     var zoomedIn by remember { mutableStateOf(false) }
     var showJumpDialog by remember { mutableStateOf(false) }
@@ -187,9 +203,9 @@ private fun ReaderContent(
 
     ImmersiveMode()
 
-    LaunchedEffect(pager.currentPage) {
+    LaunchedEffect(pager.currentPage, spread) {
         zoomedIn = false
-        viewModel.saveProgress(pager.currentPage)
+        viewModel.saveProgress(firstPageOf(pager.currentPage))
     }
 
     BackHandler {
@@ -199,13 +215,20 @@ private fun ReaderContent(
     val imageContext = LocalContext.current
     val haptics = LocalHapticFeedback.current
 
+    // 翻页相关的偏好。改了对话框里的选项就地更新，不用退出去重进
+    var sensitivity by remember { mutableStateOf(PagePrefs.sensitivity(imageContext)) }
+    var volumeKeys by remember { mutableStateOf(PagePrefs.volumeKeys(imageContext)) }
+    var longPressTurn by remember { mutableStateOf(PagePrefs.longPressTurn(imageContext)) }
+    var showTurnSettings by remember { mutableStateOf(false) }
+
     // 长按页面 → 保存这一页到相册。漫画里常有想单独存下来的整页，
     // 复制到相册比"截图再裁剪"省事；单页失败不影响阅读，只弹个提示。
     var savingPage by remember { mutableStateOf(false) }
     val doSavePage: () -> Unit = {
-        val path = pageList.getOrNull(pager.currentPage).orEmpty()
+        val pageIndex = firstPageOf(pager.currentPage)
+        val path = pageList.getOrNull(pageIndex).orEmpty()
         if (path.isNotEmpty() && !savingPage) {
-            val pageNumber = pager.currentPage + 1
+            val pageNumber = pageIndex + 1
             savingPage = true
             scope.launch {
                 val saved = GalleryExporter.export(
@@ -253,21 +276,71 @@ private fun ReaderContent(
     }
 
     val goTo: (Int) -> Unit = { target ->
-        val clamped = target.coerceIn(0, pageCount - 1)
+        // 传进来的是真实页码；双页模式下要换算成跨页序号
+        val slot = if (spread) target / 2 else target
+        val clamped = slot.coerceIn(0, slotCount - 1)
         if (clamped != pager.currentPage) {
-            scope.launch { pager.animateScrollToPage(clamped) }
+            scope.launch {
+                pager.animateScrollToPage(clamped, animationSpec = tween(sensitivity.animMs))
+            }
+        } else if (slot != pager.currentPage) {
+            // 本来就在第一页/最后一页：给个提示，不能拖了半天一点反应都没有
+            Toast.makeText(
+                imageContext,
+                if (slot < 0) "已经是第一页" else "已经是最后一页",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
-    // 预取前后各一页：翻页时图片已经在内存/磁盘缓存里，不会先白一下。
+    // 按跨页序号翻页（缩放态边缘拖拽用，不经过页码换算）
+    val turnBy: (Int) -> Unit = { delta ->
+        val target = pager.currentPage + delta
+        if (target in 0 until slotCount) {
+            scope.launch {
+                pager.animateScrollToPage(target, animationSpec = tween(sensitivity.animMs))
+            }
+        } else {
+            Toast.makeText(
+                imageContext,
+                if (target < 0) "已经是第一页" else "已经是最后一页",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    // 音量键：只有开了开关才挂回调，退出阅读器（或关掉开关）立刻摘掉
+    val currentTurnBy by rememberUpdatedState(turnBy)
+    DisposableEffect(volumeKeys) {
+        if (volumeKeys) {
+            PageKeyBus.onTurn = { forward -> currentTurnBy(if (forward) 1 else -1) }
+        }
+        onDispose { PageKeyBus.onTurn = null }
+    }
+
+    // 长按连翻：按住页面不放就一直往后翻，松手停。
+    // 只在用户明确打开开关时生效——默认关，避免和"长按存图"抢同一个手势。
+    var autoTurning by remember { mutableStateOf(false) }
+    LaunchedEffect(autoTurning) {
+        while (autoTurning) {
+            currentTurnBy(1)
+            delay(420L)
+        }
+    }
+
+    // 预取前后各一屏：翻页时图片已经在内存/磁盘缓存里，不会先白一下。
     // 用 Coil 主动 enqueue，而不是让 Pager 多组合一页——多组合会同时解码大图，更容易 OOM。
-    LaunchedEffect(pager.currentPage, pageList.size) {
-        listOf(pager.currentPage + 1, pager.currentPage - 1).forEach { index ->
-            val path = pageList.getOrNull(index).orEmpty()
-            if (path.isNotEmpty()) {
-                imageContext.imageLoader.enqueue(
-                    ImageRequest.Builder(imageContext).data(File(path)).build()
-                )
+    LaunchedEffect(pager.currentPage, slotCount, spread) {
+        listOf(pager.currentPage + 1, pager.currentPage - 1).forEach { slot ->
+            val start = if (spread) slot * 2 else slot
+            val indexes = if (spread) listOf(start, start + 1) else listOf(start)
+            indexes.forEach { index ->
+                val path = pageList.getOrNull(index).orEmpty()
+                if (path.isNotEmpty()) {
+                    imageContext.imageLoader.enqueue(
+                        ImageRequest.Builder(imageContext).data(File(path)).build()
+                    )
+                }
             }
         }
     }
@@ -283,13 +356,26 @@ private fun ReaderContent(
             reverseLayout = book.rtl,
             userScrollEnabled = !zoomedIn
         ) { index ->
+            val slotStart = if (spread) index * 2 else index
+            val firstPath = pageList.getOrNull(slotStart).orEmpty()
+            val secondPath = if (spread) pageList.getOrNull(slotStart + 1) else null
             ZoomablePage(
                 // 一本书的页数可能在别处被导入/取消改动，索引越界时给空路径让 Coil 走错误占位，
-                // 直接 pages[index] 会抛 IndexOutOfBounds 把整个阅读器带崩
-                path = pageList.getOrNull(index).orEmpty(),
+                // 直接 pages[index] 会抛 IndexOutOfBounds 把整个阅读器带崩。
+                // 日漫从右往左读，所以"后一页"在左边、"前一页"在右边。
+                path = if (book.rtl) secondPath.orEmpty() else firstPath,
+                secondPath = if (book.rtl) firstPath else secondPath,
                 isCurrent = index == pager.currentPage,
+                sensitivity = sensitivity,
+                onEdgeFling = { dragLeft ->
+                    // 和未缩放时滑动方向保持一致，否则日漫模式下会反着翻
+                    val forward = if (book.rtl) !dragLeft else dragLeft
+                    turnBy(if (forward) 1 else -1)
+                },
                 onZoomChanged = { zoomed -> if (index == pager.currentPage) zoomedIn = zoomed },
                 onLongPress = onLongPressPage,
+                longPressTurn = longPressTurn,
+                onAutoTurn = { autoTurning = it },
                 onTapAt = { fraction ->
                     if (!zoomedIn) {
                         when {
@@ -357,8 +443,14 @@ private fun ReaderContent(
                         .clickable { showPagePicker = true }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
+                    val shownStart = firstPageOf(pager.currentPage) + 1
+                    val shownEnd = if (spread) (shownStart + 1).coerceAtMost(pageCount) else shownStart
                     Text(
-                        text = "${pager.currentPage + 1} / $pageCount",
+                        text = if (shownEnd > shownStart) {
+                            "$shownStart-$shownEnd / $pageCount"
+                        } else {
+                            "$shownStart / $pageCount"
+                        },
                         color = MaterialTheme.colorScheme.onBackground,
                         style = MaterialTheme.typography.labelLarge
                     )
@@ -379,14 +471,14 @@ private fun ReaderContent(
                     .navigationBarsPadding()
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                if (pageCount > 1) {
+                if (slotCount > 1) {
                     Slider(
                         value = pager.currentPage.toFloat(),
                         onValueChange = { value ->
-                            val target = value.roundToInt().coerceIn(0, pageCount - 1)
+                            val target = value.roundToInt().coerceIn(0, slotCount - 1)
                             scope.launch { pager.scrollToPage(target) }
                         },
-                        valueRange = 0f..(pageCount - 1).toFloat()
+                        valueRange = 0f..(slotCount - 1).toFloat()
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -400,24 +492,60 @@ private fun ReaderContent(
                         Text("跳页", color = MaterialTheme.colorScheme.primary)
                     }
                     TextButton(onClick = onManagePages) {
+                        Text(text = "页面管理", fontSize = 12.sp)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
+                        Text(
+                            text = if (book.rtl) "改为从左往右" else "改为从右往左",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp
+                        )
+                    }
+                    if (pageCount > 1) {
+                        TextButton(onClick = { viewModel.setTwoPage(!book.twoPage) }) {
                             Text(
-                                text = "页面管理",
+                                text = if (book.twoPage) "改单页" else "改双页",
+                                color = MaterialTheme.colorScheme.primary,
                                 fontSize = 12.sp
                             )
                         }
-                        TextButton(onClick = { viewModel.setRtl(!book.rtl) }) {
+                    }
+                    TextButton(onClick = { showTurnSettings = true }) {
                         Text(
-                            text = if (book.rtl) "改为从左往右" else "改为从右往左",
-                            color = MaterialTheme.colorScheme.primary
+                            text = "翻页设置",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp
                         )
                     }
                 }
             }
         }
+        if (showTurnSettings) {
+            PageTurnSettingsDialog(
+                sensitivity = sensitivity,
+                volumeKeys = volumeKeys,
+                longPressTurn = longPressTurn,
+                onSensitivity = {
+                    sensitivity = it
+                    PagePrefs.setSensitivity(imageContext, it)
+                },
+                onVolumeKeys = {
+                    volumeKeys = it
+                    PagePrefs.setVolumeKeys(imageContext, it)
+                },
+                onLongPressTurn = {
+                    longPressTurn = it
+                    PagePrefs.setLongPressTurn(imageContext, it)
+                },
+                onDismiss = { showTurnSettings = false }
+            )
+        }
         if (showPagePicker) {
             PagePicker(
                 pages = pageList,
-                currentPage = pager.currentPage,
+                currentPage = firstPageOf(pager.currentPage),
                 onDismiss = { showPagePicker = false },
                 onPick = { target ->
                     showPagePicker = false
@@ -430,7 +558,7 @@ private fun ReaderContent(
     if (showJumpDialog) {
         PageJumpDialog(
             pageCount = pageCount,
-            currentPage = pager.currentPage,
+            currentPage = firstPageOf(pager.currentPage),
             onDismiss = { showJumpDialog = false },
             onJump = { target ->
                 showJumpDialog = false
@@ -450,19 +578,29 @@ private fun ReaderContent(
 @Composable
 private fun ZoomablePage(
     path: String,
+    secondPath: String?,
     isCurrent: Boolean,
+    sensitivity: PageSensitivity,
     onZoomChanged: (Boolean) -> Unit,
     onTapAt: (Float) -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    /** 长按连翻开关：开了就由「按住不放」驱动连续翻页，长按存图改由按钮触发 */
+    longPressTurn: Boolean,
+    onAutoTurn: (Boolean) -> Unit,
+    /** 放大后拖到边界还想继续拖、并且拖够了/甩得够快：dragLeft = 往左越界 */
+    onEdgeFling: (dragLeft: Boolean) -> Unit
 ) {
-    var scale by remember(path) { mutableStateOf(1f) }
-    var offset by remember(path) { mutableStateOf(Offset.Zero) }
+    var scale by remember(path, secondPath) { mutableStateOf(1f) }
+    var offset by remember(path, secondPath) { mutableStateOf(Offset.Zero) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
 
     // pointerInput 的 lambda 只在 path 变化时重建，直接用外部 lambda 会捕获旧值；
     // 用 rememberUpdatedState 保证长按/点击永远调用到最新的一版（指向当前页）。
     val currentOnLongPress by rememberUpdatedState(onLongPress)
     val currentOnTapAt by rememberUpdatedState(onTapAt)
+    val currentOnEdgeFling by rememberUpdatedState(onEdgeFling)
+    val currentOnAutoTurn by rememberUpdatedState(onAutoTurn)
+    val currentScale = rememberUpdatedState(scale)
 
     LaunchedEffect(isCurrent) {
         if (!isCurrent) {
@@ -475,41 +613,94 @@ private fun ZoomablePage(
         onZoomChanged(scale > 1.01f)
     }
 
+    // 双页模式下两张图并排，整排一起缩放/平移：对开本漫画的跨页大图要一起看才连续
+    val left = path
+    val right = secondPath.orEmpty()
+    val twoUp = left.isNotEmpty() && right.isNotEmpty()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .clipToBounds()
             .onSizeChanged { viewSize = it }
-            .pointerInput(path) {
+            .pointerInput(path, secondPath, sensitivity) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    // 一只手势里累计"拖到边界外还想继续拖"的量。
+                    // 缩放态下这个量超过阈值（或甩得够快）就翻页——这是"放大后出不来"的解药。
+                    var overdrag = 0f
+                    var velocity = 0f
+                    var lastTime = 0L
                     while (true) {
                         val event = awaitPointerEvent()
                         val pressed = event.changes.count { it.pressed }
-                        if (pressed == 0) break
-                        if (pressed > 1 || scale > 1.01f) {
-                            val zoom = if (pressed > 1) event.calculateZoom() else 1f
-                            val pan = event.calculatePan()
+                        if (pressed == 0) {
+                            if (overdrag != 0f) {
+                                val threshold = size.width * sensitivity.edgeFraction
+                                // 拖动量超过了阈值、或者甩得够快 → 翻页；否则什么都不做，图自然停在边界
+                                if (abs(overdrag) >= threshold || abs(velocity) >= sensitivity.flingVelocity) {
+                                    currentOnEdgeFling(overdrag < 0f)
+                                }
+                                overdrag = 0f
+                            }
+                            break
+                        }
+                        if (pressed > 1) {
+                            // 双指：只缩放，不累计超拖
+                            val zoom = event.calculateZoom()
                             val next = (scale * zoom).coerceIn(1f, 4f)
                             scale = next
-                            offset = if (next <= 1.01f) {
-                                Offset.Zero
-                            } else {
-                                clampOffset(offset + pan, viewSize, next)
+                            overdrag = 0f
+                            velocity = 0f
+                            event.changes.forEach { it.consume() }
+                        } else if (scale > 1.01f) {
+                            // 单指 + 已放大 = 平移；越过边界的那部分记进 overdrag
+                            val pan = event.calculatePan()
+                            val maxX = (size.width * (scale - 1f)) / 2f
+                            val desiredX = offset.x + pan.x
+                            val clampedX = desiredX.coerceIn(-maxX, maxX)
+                            overdrag += desiredX - clampedX
+                            val now = SystemClock.uptimeMillis()
+                            if (lastTime != 0L && pan.x != 0f) {
+                                val dt = (now - lastTime).coerceAtLeast(1L).toFloat()
+                                velocity = pan.x / dt * 1000f
                             }
+                            lastTime = now
+                            offset = clampOffset(
+                                Offset(clampedX, offset.y + pan.y),
+                                viewSize,
+                                scale
+                            )
                             event.changes.forEach { it.consume() }
                         }
                     }
                 }
             }
-            .pointerInput(path) {
+            .pointerInput(path, secondPath, longPressTurn) {
                 detectTapGestures(
-                    onTap = { position ->
-                        val width = if (viewSize.width == 0) 1 else viewSize.width
-                        currentOnTapAt((position.x / width.toFloat()).coerceIn(0f, 0.999f))
+                    // 长按连翻：按下后 480ms 还没松手 = 开始连翻，松手即停。
+                    // 用 onPress 而不是 onLongPress——只有 onPress 能感知"什么时候松手"。
+                    onPress = {
+                        if (longPressTurn && currentScale.value <= 1.01f) {
+                            val released = withTimeoutOrNull(480L) { tryAwaitRelease() }
+                            if (released == null) {
+                                currentOnAutoTurn(true)
+                                tryAwaitRelease()
+                                currentOnAutoTurn(false)
+                            }
+                        }
                     },
-                    // 长按 = 保存这一页（缩放状态下也有效，方便保存放大后的区域观察）
-                    onLongPress = { currentOnLongPress() },
+                    onTap = { position ->
+                        // 放大状态下点击不翻页：这时用户在看细节，点一下就跳页太容易误触。
+                        // 想翻页先双击复位（或拖到边界继续拖）。
+                        if (scale <= 1.01f) {
+                            val width = if (viewSize.width == 0) 1 else viewSize.width
+                            currentOnTapAt((position.x / width.toFloat()).coerceIn(0f, 0.999f))
+                        }
+                    },
+                    // 长按 = 保存这一页（缩放状态下也有效，方便保存放大后的区域观察）。
+                    // 开了「长按连翻」就以连翻为准，存图走工具栏的「保存本页」按钮。
+                    onLongPress = { if (!longPressTurn) currentOnLongPress() },
                     onDoubleTap = {
                         if (scale > 1.01f) {
                             scale = 1f
@@ -523,34 +714,47 @@ private fun ZoomablePage(
             },
         contentAlignment = Alignment.Center
     ) {
-        SubcomposeAsyncImage(
-            model = File(path),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
-                },
-            // 文件被删 / 格式坏 / 解码失败：显示占位，不抛异常、不白屏
-            error = {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "这一页无法显示\n文件可能已被删除或损坏",
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center
-                    )
-                }
+        val layer = Modifier.graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+            translationX = offset.x
+            translationY = offset.y
+        }
+        if (twoUp) {
+            Row(modifier = Modifier.fillMaxSize().then(layer)) {
+                PageImage(left, Modifier.weight(1f).fillMaxHeight())
+                PageImage(right, Modifier.weight(1f).fillMaxHeight())
             }
-        )
+        } else {
+            // 奇数页的最后一屏只有一张图：让它单独占满，不留半屏空白
+            PageImage(if (left.isNotEmpty()) left else right, Modifier.fillMaxSize().then(layer))
+        }
     }
+}
+
+/** 单张页面图；解码失败时给占位文案，不抛异常、不白屏 */
+@Composable
+private fun PageImage(path: String, modifier: Modifier) {
+    SubcomposeAsyncImage(
+        model = File(path),
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        modifier = modifier,
+        // 文件被删 / 格式坏 / 解码失败：显示占位，不抛异常、不白屏
+        error = {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "这一页无法显示\n文件可能已被删除或损坏",
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    )
 }
 
 private fun clampOffset(offset: Offset, size: IntSize, scale: Float): Offset {
@@ -805,4 +1009,93 @@ private fun PageThumb(
                 .padding(horizontal = 4.dp, vertical = 1.dp)
         )
     }
+}
+
+/**
+ * 翻页设置。
+ *
+ * 灵敏度用三档而不是滑杆：滑杆的数字对用户没意义，三档能直接说出差别
+ * （"不易误翻 / 默认 / 很灵敏"），也不需要在真机上反复试参数。
+ */
+@Composable
+private fun PageTurnSettingsDialog(
+    sensitivity: PageSensitivity,
+    volumeKeys: Boolean,
+    longPressTurn: Boolean,
+    onSensitivity: (PageSensitivity) -> Unit,
+    onVolumeKeys: (Boolean) -> Unit,
+    onLongPressTurn: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("翻页设置") },
+        text = {
+            Column {
+                Text(
+                    text = "灵敏度",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                PageSensitivity.entries.forEach { option ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSensitivity(option) }
+                            .padding(vertical = 2.dp)
+                    ) {
+                        RadioButton(
+                            selected = option == sensitivity,
+                            onClick = { onSensitivity(option) }
+                        )
+                        Text(option.label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("音量键翻页", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "下键下一页、上键上一页",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = volumeKeys, onCheckedChange = onVolumeKeys)
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("长按连翻", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "按住页面不放连续往后翻，松手停；开启后长按不再存图",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = longPressTurn, onCheckedChange = onLongPressTurn)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = if (longPressTurn) {
+                        "长按 = 连续翻页；保存图片用工具栏的「保存本页」。双击 = 放大 / 复位；放大后拖到边缘继续拖 = 翻页。"
+                    } else {
+                        "长按图片 = 保存这一页；双击 = 放大 / 复位；放大后拖到边缘继续拖 = 翻页。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
 }

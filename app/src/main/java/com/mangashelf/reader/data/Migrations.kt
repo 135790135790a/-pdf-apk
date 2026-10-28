@@ -4,6 +4,26 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v5 → v6：加「最后阅读时间」`books.lastReadAt` 和「双页模式」`books.twoPage`。
+ *
+ * 两条都走 ALTER（books 表小、又被 pages 的外键引用，重建代价更大）。
+ * ALTER 加 NOT NULL 必须带 DEFAULT，所以实体上也标了 `@ColumnInfo(defaultValue = "0")`，
+ * 这样 Room 从 [Book] 生成的结构里也有默认值，两边才对得上。
+ *
+ * 老数据：`lastReadAt = 0` 表示没读过（排序时回退到导入时间）；`twoPage = 0` 表示单页。
+ */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `lastReadAt` INTEGER NOT NULL DEFAULT 0"
+        )
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `twoPage` INTEGER NOT NULL DEFAULT 0"
+        )
+    }
+}
+
+/**
  * v4 → v5：页面级管理（PDF 原始页码 / 缩略图 / 尺寸 / 软删除）+ 书架长按信息（来源大小 / 封面页）。
  *
  * 两张表分两种策略：

@@ -29,8 +29,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -117,6 +124,7 @@ fun ShelfScreen(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
     val covers by viewModel.covers.collectAsStateWithLifecycle()
+    val continueBook by viewModel.continueBook.collectAsStateWithLifecycle()
 
     // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
     // 真正切到后台时靠 ImportForegroundService 保命，两者配合。
@@ -141,6 +149,9 @@ fun ShelfScreen(
     var searchText by rememberSaveable { mutableStateOf("") }
     val searchFocus = remember { FocusRequester() }
     var showSortMenu by remember { mutableStateOf(false) }
+    var showLayoutMenu by remember { mutableStateOf(false) }
+    // 书架布局：切换后立刻生效并记住，下次打开 App 还是这个视图
+    var layout by remember { mutableStateOf(ShelfLayoutPrefs.load(context)) }
     var showThemeMenu by remember { mutableStateOf(false) }
     var showImportSortSettings by remember { mutableStateOf(false) }
     var showBackupMenu by remember { mutableStateOf(false) }
@@ -334,6 +345,41 @@ fun ShelfScreen(
                         )
                     }
                     Box {
+                        TextButton(onClick = { showLayoutMenu = true }) {
+                            Text(layout.label, color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(
+                            expanded = showLayoutMenu,
+                            onDismissRequest = { showLayoutMenu = false }
+                        ) {
+                            ShelfLayout.entries.forEach { option ->
+                                val selected = option == layout
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = option.label,
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
+                                        )
+                                    },
+                                    leadingIcon = if (selected) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        layout = option
+                                        ShelfLayoutPrefs.save(context, option)
+                                        showLayoutMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Box {
                         TextButton(onClick = { showSortMenu = true }) {
                             Text("排序", color = MaterialTheme.colorScheme.onBackground)
                         }
@@ -483,21 +529,86 @@ fun ShelfScreen(
                     )
                 }
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    items(books, key = { it.id }) { book ->
-                        BookCard(
-                            book = book,
-                            coverPath = covers[book.id].orEmpty(),
-                            showCover = !safeMode,
-                            onClick = { onOpenBook(book.id) },
-                            onLongClick = { optionsBookId = book.id }
-                        )
+                when (layout) {
+                    ShelfLayout.GRID -> LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)
+                    ) {
+                        continueBook?.let { recent ->
+                            item(span = { GridItemSpan(maxLineSpan) }, key = "continue-reading") {
+                                ContinueReadingCard(
+                                    book = recent,
+                                    coverPath = covers[recent.id].orEmpty(),
+                                    onClick = { onOpenBook(recent.id) }
+                                )
+                            }
+                        }
+                        items(books, key = { it.id }) { book ->
+                            BookCard(
+                                book = book,
+                                coverPath = covers[book.id].orEmpty(),
+                                showCover = !safeMode,
+                                onClick = { onOpenBook(book.id) },
+                                onLongClick = { optionsBookId = book.id }
+                            )
+                        }
+                    }
+
+                    ShelfLayout.LIST -> LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        continueBook?.let { recent ->
+                            item(key = "continue-reading") {
+                                ContinueReadingCard(
+                                    book = recent,
+                                    coverPath = covers[recent.id].orEmpty(),
+                                    onClick = { onOpenBook(recent.id) }
+                                )
+                            }
+                        }
+                        items(books, key = { it.id }) { book ->
+                            BookRow(
+                                book = book,
+                                coverPath = covers[book.id].orEmpty(),
+                                showCover = !safeMode,
+                                onClick = { onOpenBook(book.id) },
+                                onLongClick = { optionsBookId = book.id }
+                            )
+                        }
+                    }
+
+                    ShelfLayout.STAGGERED -> LazyVerticalStaggeredGrid(
+                        columns = StaggeredGridCells.Fixed(2),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalItemSpacing = 18.dp
+                    ) {
+                        continueBook?.let { recent ->
+                            item(span = StaggeredGridItemSpan.FullLine, key = "continue-reading") {
+                                ContinueReadingCard(
+                                    book = recent,
+                                    coverPath = covers[recent.id].orEmpty(),
+                                    onClick = { onOpenBook(recent.id) }
+                                )
+                            }
+                        }
+                        items(books, key = { it.id }) { book ->
+                            BookCard(
+                                book = book,
+                                coverPath = covers[book.id].orEmpty(),
+                                showCover = !safeMode,
+                                // 0.60 ~ 0.78 之间按书轮换，相邻两列自然错开
+                                coverRatio = 0.60f + (book.id % 4).toFloat() * 0.06f,
+                                onClick = { onOpenBook(book.id) },
+                                onLongClick = { optionsBookId = book.id }
+                            )
+                        }
                     }
                 }
             }
@@ -947,12 +1058,85 @@ private fun EmptyShelf(
     }
 }
 
+/**
+ * 书架顶部的「继续阅读」卡片：接着上次那一本、那一页往下看。
+ *
+ * 只在"最近读过且没读完"时出现；搜索时不出现（那时用户在找别的书）。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ContinueReadingCard(
+    book: Book,
+    coverPath: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onClick, onLongClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(54.dp)
+                .aspectRatio(0.72f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            AsyncImage(
+                model = if (coverPath.isNotEmpty()) File(coverPath) else null,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+                error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "继续阅读",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = book.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "第 ${book.lastPage + 1} / ${book.pageCount} 页",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(
+                progress = book.progressFraction,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(CircleShape),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BookCard(
     book: Book,
     coverPath: String,
     showCover: Boolean,
+    /** 封面宽高比。瀑布流里按书取不同比例，让相邻两列错落开 */
+    coverRatio: Float = 0.72f,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -966,7 +1150,7 @@ private fun BookCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.72f)
+                .aspectRatio(coverRatio)
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
@@ -1029,6 +1213,71 @@ private fun BookCard(
 
 private fun formatBookDate(at: Long): String =
     java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(at))
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BookRow(
+    book: Book,
+    coverPath: String,
+    showCover: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(56.dp)
+                .height(78.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            AsyncImage(
+                model = if (showCover) File(coverPath) else null,
+                contentDescription = book.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+                error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = book.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = buildString {
+                    append("${book.pageCount} 页")
+                    if (book.lastPage > 0) append(" · 读到第 ${book.lastPage + 1} 页")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (book.pageCount > 1 && book.lastPage > 0) {
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { book.progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun BookOptionsDialog(

@@ -144,6 +144,49 @@ class PageManageViewModel(app: Application, private val bookId: Long) : AndroidV
         }
     }
 
+    /** 拖动排序：把某页往前/往后挪 [offset] 位（负数往前）。只改 idx，不动文件 */
+    fun movePage(pageId: Long, offset: Int) {
+        if (offset == 0) return
+        val book = _book.value ?: return
+        val visible = _pages.value.filter { it.deleted == 0 }
+        val from = visible.indexOfFirst { it.id == pageId }
+        if (from < 0) return
+        val to = (from + offset).coerceIn(0, visible.lastIndex)
+        if (to == from) return
+        _busy.value = true
+        viewModelScope.launch {
+            val list = visible.toMutableList()
+            list.add(to, list.removeAt(from))
+            runCatching { repo.reorderPages(book, list.map { it.id }) }
+            refresh()
+            _busy.value = false
+            _message.value = "已移动到第 ${to + 1} 位"
+        }
+    }
+
+    /** 选中块置顶（edge = -1）或置底（edge = +1） */
+    fun moveSelectedTo(edge: Int) {
+        val book = _book.value ?: return
+        val visible = _pages.value.filter { it.deleted == 0 }
+        val sel = _selected.value
+        if (sel.isEmpty()) return
+        val picked = visible.filter { it.id in sel }
+        if (picked.isEmpty()) return
+        val rest = visible.filterNot { it.id in sel }
+        val ordered = if (edge < 0) picked + rest else rest + picked
+        if (ordered.map { it.id } == visible.map { it.id }) {
+            _message.value = if (edge < 0) "已经在最前面了" else "已经在最后面了"
+            return
+        }
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { repo.reorderPages(book, ordered.map { it.id }) }
+            refresh()
+            _busy.value = false
+            _message.value = if (edge < 0) "已置顶 ${picked.size} 页" else "已置底 ${picked.size} 页"
+        }
+    }
+
     fun applySort(mode: PageSortMode) {
         val book = _book.value ?: return
         _busy.value = true
