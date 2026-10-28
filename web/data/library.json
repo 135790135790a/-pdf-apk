@@ -1,0 +1,18 @@
+{
+  "books": [
+    {
+      "id": "3cb672d166f1",
+      "title": "董卓 下",
+      "rtl": true,
+      "lastPage": 0,
+      "createdAt": 1792914279571
+    },
+    {
+      "id": "dd06bace5885",
+      "title": "示例漫画（可删除）",
+      "rtl": true,
+      "lastPage": 1,
+      "createdAt": 1792912736335
+    }
+  ]
+}

@@ -66,7 +66,22 @@ data class Book(
 
     /** 双页模式：一次显示两页（跨页大图、对开本漫画用）；阅读器里按书开关 */
     @ColumnInfo(defaultValue = "0")
-    val twoPage: Boolean = false
+    val twoPage: Boolean = false,
+
+    // ---------------------------------------------------------------------
+    // v6 → v7 新增（见 Migrations.kt MIGRATION_6_7）
+    // 同样 ALTER 加列，所以都带 defaultValue。
+    // ---------------------------------------------------------------------
+
+    /** 作者，可为空；书架长按「编辑信息」里填，用来搜索 */
+    @ColumnInfo(defaultValue = "")
+    val author: String = "",
+    /** 标签，逗号分隔；同样可在「编辑信息」里改 */
+    @ColumnInfo(defaultValue = "")
+    val tags: String = "",
+    /** 阅读模式：HORIZONTAL / VERTICAL / DOUBLE；旧数据默认横向 */
+    @ColumnInfo(defaultValue = "HORIZONTAL")
+    val readMode: String = "HORIZONTAL"
 ) {
     val progressFraction: Float
         get() = if (pageCount <= 1) 0f else (lastPage.toFloat() / (pageCount - 1)).coerceIn(0f, 1f)

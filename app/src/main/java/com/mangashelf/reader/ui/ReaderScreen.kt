@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -186,7 +187,8 @@ private fun ReaderContent(
     val pageCount = pageList.size
     // 双页模式：一个"跨页"放两张图，所以 Pager 的页数要减半（奇数页最后一张单独一屏）。
     // 至少要有 2 页才值得开双页，只有 1 页时自动当单页处理。
-    val spread = book.twoPage && pageCount > 1
+    // v1.5.5：双页并排由 readMode 决定（老书 twoPage=true 但 readMode 默认 HORIZONTAL 时仍按单页）
+    val spread = book.readMode == "DOUBLE" && pageCount > 1
     val slotCount = if (spread) (pageCount + 1) / 2 else pageCount
     val scope = rememberCoroutineScope()
     val pager = rememberPagerState(
@@ -350,12 +352,8 @@ private fun ReaderContent(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        HorizontalPager(
-            state = pager,
-            modifier = Modifier.fillMaxSize(),
-            reverseLayout = book.rtl,
-            userScrollEnabled = !zoomedIn
-        ) { index ->
+        val vertical = book.readMode == "VERTICAL"
+        val pageContent: @Composable (Int) -> Unit = { index ->
             val slotStart = if (spread) index * 2 else index
             val firstPath = pageList.getOrNull(slotStart).orEmpty()
             val secondPath = if (spread) pageList.getOrNull(slotStart + 1) else null
@@ -391,6 +389,21 @@ private fun ReaderContent(
                     }
                 }
             )
+        }
+        if (vertical) {
+            // v1.5.5 需求三：上下滚动模式（条漫/长图）。整页吸附，缩放时交给手势层自己处理。
+            VerticalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize(),
+                userScrollEnabled = !zoomedIn
+            ) { index -> pageContent(index) }
+        } else {
+            HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize(),
+                reverseLayout = book.rtl,
+                userScrollEnabled = !zoomedIn
+            ) { index -> pageContent(index) }
         }
 
         AnimatedVisibility(

@@ -4,6 +4,39 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v6 → v7：作者 / 标签 / 阅读模式，以及导入任务的页级进度。
+ *
+ * 两张表都走 ALTER：books 被 pages 外键引用（重建要处理外键），import_tasks 本来就只有几行。
+ * ALTER 加 NOT NULL 必须带 DEFAULT，所以实体上都标了 `@ColumnInfo(defaultValue = ...)`，
+ * 两边才对得上。
+ *
+ * 老数据：`author`/`tags` 为空串（搜索时不命中，不影响原有书名搜索）；
+ * `readMode` 默认 HORIZONTAL，与升级前的单页/双页行为一致（双页仍读旧的 `twoPage` 字段）。
+ */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `author` TEXT NOT NULL DEFAULT ''"
+        )
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `tags` TEXT NOT NULL DEFAULT ''"
+        )
+        database.execSQL(
+            "ALTER TABLE `books` ADD COLUMN `readMode` TEXT NOT NULL DEFAULT 'HORIZONTAL'"
+        )
+        database.execSQL(
+            "ALTER TABLE `import_tasks` ADD COLUMN `totalPages` INTEGER NOT NULL DEFAULT 0"
+        )
+        database.execSQL(
+            "ALTER TABLE `import_tasks` ADD COLUMN `renderedPages` INTEGER NOT NULL DEFAULT 0"
+        )
+        database.execSQL(
+            "ALTER TABLE `import_tasks` ADD COLUMN `currentPage` INTEGER NOT NULL DEFAULT 0"
+        )
+    }
+}
+
+/**
  * v5 → v6：加「最后阅读时间」`books.lastReadAt` 和「双页模式」`books.twoPage`。
  *
  * 两条都走 ALTER（books 表小、又被 pages 的外键引用，重建代价更大）。

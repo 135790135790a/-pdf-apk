@@ -41,4 +41,8 @@ interface BookDao {
     /** 备份用：一次性拿全部书（不走 Flow） */
     @Query("SELECT * FROM books ORDER BY createdAt ASC")
     suspend fun allBooks(): List<Book>
+
+    /** v1.5.5 编辑信息：作者与标签，供书架搜索命中 */
+    @Query("UPDATE books SET author = :author, tags = :tags WHERE id = :id")
+    suspend fun updateMeta(id: Long, author: String, tags: String)
 }

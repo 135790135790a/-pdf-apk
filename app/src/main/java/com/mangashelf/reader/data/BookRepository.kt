@@ -88,9 +88,20 @@ class BookRepository(
         if (title.isNotBlank() && title != book.title) dao.update(book.copy(title = title))
     }
 
+    /** v1.5.5：作者与标签，只用于搜索展示，不影响页序与封面 */
+    suspend fun updateMeta(bookId: Long, author: String, tags: String) {
+        dao.updateMeta(bookId, author.trim(), tags.trim())
+    }
+
     suspend fun setRtl(bookId: Long, rtl: Boolean) {
         val book = dao.get(bookId) ?: return
         if (book.rtl != rtl) dao.update(book.copy(rtl = rtl))
+    }
+
+    /** v1.5.5 需求三：阅读模式按书存 —— HORIZONTAL / VERTICAL / DOUBLE */
+    suspend fun setReadMode(bookId: Long, mode: String) {
+        val book = dao.get(bookId) ?: return
+        if (book.readMode != mode) dao.update(book.copy(readMode = mode, twoPage = mode == "DOUBLE"))
     }
 
     /** 双页模式按书存：跨页大图的书适合双页，普通单页漫画还是单页清楚 */
@@ -230,17 +241,29 @@ class BookRepository(
      *
      * 不能再用 `page_001.jpg`——页序重排/删页之后，第 1 页可能已经是别的文件了。
      */
-    suspend fun coverPathOf(book: Book): String = withContext(Dispatchers.IO) {
-        val target = runCatching {
-            pageDao.getAt(book.id, book.coverPageIdx.coerceAtLeast(0))
-                ?: pageDao.getAt(book.id, 0)
-        }.getOrNull()
-        if (target != null) {
+    suspend fun coverPathOf(book: Book, quality: CoverQuality = CoverQuality.THUMB): String =
+        withContext(Dispatchers.IO) {
+            val target = runCatching {
+                pageDao.getAt(book.id, book.coverPageIdx.coerceAtLeast(0))
+                    ?: pageDao.getAt(book.id, 0)
+            }.getOrNull()
+            if (target == null) {
+                return@withContext storage.pagePath(book.folder, 0)
+            }
+            // 缩略图优先：懒生成 + 文件校验，任何一步失败都回退原图，绝不让书架空着。
+            if (quality == CoverQuality.THUMB) {
+                val rel = runCatching {
+                    ThumbStore.ensure(storage, book.folder, target)
+                }.getOrNull()
+                if (rel != null) {
+                    val thumb = File(storage.dirOf(book.folder), rel)
+                    if (thumb.isFile && thumb.length() > 0L) {
+                        return@withContext thumb.absolutePath
+                    }
+                }
+            }
             File(storage.dirOf(book.folder), target.relPath).absolutePath
-        } else {
-            storage.pagePath(book.folder, 0)
         }
-    }
 
     // ---------------------------------------------------------------------
     // 导入任务（v4）：让"导到一半被杀"这件事有据可查
@@ -253,6 +276,12 @@ class BookRepository(
     suspend fun taskStatus(id: Long, status: String, error: String? = null) =
         withContext(Dispatchers.IO) {
             taskDao.setStatus(id, status, error, System.currentTimeMillis())
+        }
+
+    /** v1.5.5：页级渲染进度回写（调用方已节流，不要每页都调） */
+    suspend fun taskProgress(id: Long, total: Int, rendered: Int, current: Int) =
+        withContext(Dispatchers.IO) {
+            taskDao.setProgress(id, total, rendered, current, System.currentTimeMillis())
         }
 
     /** 上次进程死掉时没跑完的任务（PENDING / RUNNING） */

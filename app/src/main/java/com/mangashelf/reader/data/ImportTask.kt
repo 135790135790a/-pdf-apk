@@ -1,5 +1,6 @@
 package com.mangashelf.reader.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -33,7 +34,22 @@ data class ImportTask(
     val status: String,
     val error: String?,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+
+    // ---------------------------------------------------------------------
+    // v6 → v7 新增（见 Migrations.kt MIGRATION_6_7）
+    // 页级渲染进度：一本 1000 页的 PDF 要渲染十几分钟，只有"第几本"会让人以为卡死。
+    // ---------------------------------------------------------------------
+
+    /** 预计总页数；PDF 在打开文档后就知道，图片/文件夹要边导边数，未知时为 0 */
+    @ColumnInfo(defaultValue = "0")
+    val totalPages: Int = 0,
+    /** 已经渲染完的页数 */
+    @ColumnInfo(defaultValue = "0")
+    val renderedPages: Int = 0,
+    /** 当前正在渲染的页码（1 基，0 表示还没开始） */
+    @ColumnInfo(defaultValue = "0")
+    val currentPage: Int = 0
 ) {
     companion object {
         const val PENDING = "PENDING"

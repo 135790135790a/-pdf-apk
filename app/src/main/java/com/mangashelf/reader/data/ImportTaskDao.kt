@@ -19,6 +19,13 @@ interface ImportTaskDao {
     @Query("UPDATE import_tasks SET status = :status, updatedAt = :now WHERE batchId = :batchId AND status = 'PENDING'")
     suspend fun cancelPending(batchId: String, status: String, now: Long)
 
+    /** v1.5.5 页级进度：PDF 逐页渲染时回写，进程被杀后能说清"渲染到第几页" */
+    @Query(
+        "UPDATE import_tasks SET totalPages = :total, renderedPages = :rendered, " +
+            "currentPage = :current, updatedAt = :now WHERE id = :id"
+    )
+    suspend fun setProgress(id: Long, total: Int, rendered: Int, current: Int, now: Long)
+
     /** 上次没跑完的（进程被杀时会留在这个状态） */
     @Query("SELECT * FROM import_tasks WHERE status IN ('PENDING', 'RUNNING') ORDER BY createdAt, sortIndex")
     suspend fun unfinished(): List<ImportTask>

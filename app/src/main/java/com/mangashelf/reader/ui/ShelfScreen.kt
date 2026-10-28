@@ -14,6 +14,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -95,6 +97,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.CoverQuality
 import com.mangashelf.reader.data.Diagnostics
 import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.PageSortMode
@@ -124,6 +127,7 @@ fun ShelfScreen(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
     val covers by viewModel.covers.collectAsStateWithLifecycle()
+    val coverQuality by viewModel.coverQuality.collectAsStateWithLifecycle()
     val continueBook by viewModel.continueBook.collectAsStateWithLifecycle()
 
     // 导入期间不让屏幕自动熄灭：锁屏是导入被系统挂起最常见的原因之一。
@@ -314,7 +318,7 @@ fun ShelfScreen(
                                 searchText = it
                                 viewModel.setQuery(it)
                             },
-                            placeholder = { Text("搜索书名") },
+                            placeholder = { Text("搜索书名 / 作者 / 标签 / 文件夹") },
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier
@@ -341,7 +345,7 @@ fun ShelfScreen(
                             } else {
                                 Icons.Rounded.Search
                             },
-                            contentDescription = if (searchActive) "关闭搜索" else "搜索书名"
+                            contentDescription = if (searchActive) "关闭搜索" else "搜索"
                         )
                     }
                     Box {
@@ -373,6 +377,31 @@ fun ShelfScreen(
                                     onClick = {
                                         layout = option
                                         ShelfLayoutPrefs.save(context, option)
+                                        showLayoutMenu = false
+                                    }
+                                )
+                            }
+                            HorizontalDivider()
+                            CoverQuality.entries.forEach { quality ->
+                                val selected = quality == coverQuality
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "封面：" + quality.label,
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
+                                        )
+                                    },
+                                    leadingIcon = if (selected) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        viewModel.setCoverQuality(quality)
                                         showLayoutMenu = false
                                     }
                                 )
@@ -732,11 +761,19 @@ fun ShelfScreen(
                             Spacer(Modifier.width(12.dp))
                             Text(
                                 text = if (state.total > 0) {
-                                    "${state.done} / ${state.total} 页"
+                                    // v1.5.5：PDF/文件夹逐页渲染，明说"第几页"，避免长任务被误当成卡死
+                                    "正在渲染第 ${state.done} / ${state.total} 页"
                                 } else {
                                     "正在解析…"
                                 },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (state.total > 0) {
+                            Spacer(Modifier.height(10.dp))
+                            LinearProgressIndicator(
+                                progress = { state.done.toFloat() / state.total.coerceAtLeast(1) },
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -867,7 +904,9 @@ fun ShelfScreen(
             book = optionsBook,
             onDismiss = { optionsBookId = null },
             onRename = { title -> viewModel.renameBook(optionsBook, title) },
+            onSaveMeta = { author, tags -> viewModel.updateBookMeta(optionsBook, author, tags) },
             onToggleDirection = { viewModel.toggleDirection(optionsBook) },
+            onSetReadMode = { mode -> viewModel.setReadMode(optionsBook, mode) },
             onManagePages = {
                 optionsBookId = null
                 onManagePages(optionsBook.id)
@@ -1284,24 +1323,46 @@ private fun BookOptionsDialog(
     book: Book,
     onDismiss: () -> Unit,
     onRename: (String) -> Unit,
+    onSaveMeta: (String, String) -> Unit,
     onToggleDirection: () -> Unit,
+    onSetReadMode: (String) -> Unit,
     onManagePages: () -> Unit,
     onSaveToGallery: () -> Unit,
     onDelete: () -> Unit
 ) {
     var title by remember(book.id) { mutableStateOf(book.title) }
+    var author by remember(book.id) { mutableStateOf(book.author) }
+    var tags by remember(book.id) { mutableStateOf(book.tags) }
     var confirmingDelete by remember(book.id) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("漫画设置") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text("书名") },
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                // v1.5.5：作者 / 标签，书架顶部搜索会一起匹配
+                OutlinedTextField(
+                    value = author,
+                    onValueChange = { author = it },
+                    label = { Text("作者（可选）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = tags,
+                    onValueChange = { tags = it },
+                    label = { Text("标签（可选）") },
+                    singleLine = true,
+                    supportingText = { Text("多个标签用逗号或空格分隔，搜索时按包含匹配") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(12.dp))
@@ -1313,6 +1374,29 @@ private fun BookOptionsDialog(
                 Spacer(Modifier.height(4.dp))
                 TextButton(onClick = onToggleDirection) {
                     Text(if (book.rtl) "改为从左往右" else "改为从右往左")
+                }
+                Spacer(Modifier.height(10.dp))
+                // v1.5.5 需求三：阅读模式三选一（按书保存）
+                Text(
+                    text = "阅读模式",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "HORIZONTAL" to "左右翻页",
+                        "VERTICAL" to "上下滚动",
+                        "DOUBLE" to "双页并排"
+                    ).forEach { (mode, label) ->
+                        FilterChip(
+                            selected = book.readMode == mode,
+                            onClick = { onSetReadMode(mode) },
+                            label = {
+                                Text(label, style = MaterialTheme.typography.labelMedium)
+                            }
+                        )
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -1348,6 +1432,7 @@ private fun BookOptionsDialog(
                 onClick = {
                     val newTitle = title.trim()
                     onRename(newTitle.ifBlank { book.title })
+                    onSaveMeta(author.trim(), tags.trim())
                     onDismiss()
                 }
             ) { Text("保存") }

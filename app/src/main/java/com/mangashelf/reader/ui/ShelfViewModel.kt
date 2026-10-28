@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.documentfile.provider.DocumentFile
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.CoverPrefs
+import com.mangashelf.reader.data.CoverQuality
 import com.mangashelf.reader.data.GalleryExporter
 import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.ImportTask
@@ -30,7 +32,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,6 +105,7 @@ data class BackupState(
     val total: Int
 )
 
+@OptIn(FlowPreview::class)
 class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as MangaShelfApp).repository
@@ -113,23 +119,36 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     /** 当前书架排序（持久化，重进 App 保持） */
     val order: StateFlow<ShelfOrder> = _order.asStateFlow()
 
-    private val _query = MutableStateFlow("")
+    private val _queryInput = MutableStateFlow("")
 
-    /** 书架搜索词。只放内存、不落盘：下次打开 App 看到的是完整书架。 */
-    val query: StateFlow<String> = _query.asStateFlow()
+    /**
+     * 书架搜索词。只放内存、不落盘：下次打开 App 看到的是完整书架。
+     *
+     * v1.5.5 起带 250ms 防抖：书多了以后每敲一个字就全表过滤（还要重排）会明显卡输入。
+     * 防抖放在 ViewModel 而不是输入框，这样"清空搜索"也只是多等 250ms，不会漏掉刷新。
+     */
+    val query: StateFlow<String> = _queryInput
+        .debounce(250)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val books: StateFlow<List<Book>> = combine(
         repo.observeBooks(),
         _order,
-        _query
+        query
     ) { list, order, keyword ->
         val sorted = order.apply(list)
         val key = keyword.trim()
         if (key.isEmpty()) {
             sorted
         } else {
-            // 只匹配书名。中文不分大小写，英文/数字忽略大小写，符合直觉。
-            sorted.filter { it.title.contains(key, ignoreCase = true) }
+            // v1.5.5：书名之外再匹配作者、标签、文件夹名。
+            // 中文不分大小写，英文/数字 ignoreCase，partial 匹配（contains）符合直觉。
+            sorted.filter {
+                it.title.contains(key, ignoreCase = true) ||
+                    it.author.contains(key, ignoreCase = true) ||
+                    it.tags.contains(key, ignoreCase = true) ||
+                    it.folder.contains(key, ignoreCase = true)
+            }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -137,7 +156,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
      * 书架顶部「继续阅读」用：最近读过、且还没翻到最后一页的那本。
      * 搜索时不动它——搜索是在找别的书，顶部再挂一张"继续上次"的卡片只会碍事。
      */
-    val continueBook: StateFlow<Book?> = combine(repo.observeBooks(), _query) { list, keyword ->
+    val continueBook: StateFlow<Book?> = combine(repo.observeBooks(), query) { list, keyword ->
         if (keyword.isNotBlank()) return@combine null
         list.asSequence()
             .filter { it.lastReadAt > 0L && it.pageCount > 1 && it.lastPage < it.pageCount - 1 }
@@ -146,7 +165,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 边打字边过滤，不需要额外点搜索按钮 */
     fun setQuery(keyword: String) {
-        _query.value = keyword
+        _queryInput.value = keyword
     }
 
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
@@ -232,12 +251,22 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val _covers = MutableStateFlow<Map<Long, String>>(emptyMap())
     val covers: StateFlow<Map<Long, String>> = _covers.asStateFlow()
 
+    /** 封面质量（v1.5.5）：默认缩略图，切换后立刻重算整张封面表 */
+    private val _coverQuality = MutableStateFlow(CoverPrefs.load(getApplication()))
+    val coverQuality: StateFlow<CoverQuality> = _coverQuality.asStateFlow()
+
+    fun setCoverQuality(quality: CoverQuality) {
+        CoverPrefs.save(getApplication(), quality)
+        _coverQuality.value = quality
+    }
+
     private fun refreshCovers() {
         viewModelScope.launch {
-            repo.observeBooks().collect { list ->
-                val map = list.associate { it.id to repo.coverPathOf(it) }
-                _covers.value = map
-            }
+            combine(repo.observeBooks(), _coverQuality) { list, quality -> list to quality }
+                .collectLatest { (list, quality) ->
+                    val map = list.associate { it.id to repo.coverPathOf(it, quality) }
+                    _covers.value = map
+                }
         }
     }
 
@@ -685,8 +714,21 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repo.rename(book.id, title) }
     }
 
+    /** v1.5.5：编辑作者与标签（只影响搜索命中，不改其它任何状态） */
+    fun updateBookMeta(book: Book, author: String, tags: String) {
+        viewModelScope.launch {
+            repo.updateMeta(book.id, author, tags)
+            _message.value = "已保存「${book.title}」的信息"
+        }
+    }
+
     fun toggleDirection(book: Book) {
         viewModelScope.launch { repo.setRtl(book.id, !book.rtl) }
+    }
+
+    /** v1.5.5 需求三：左右翻页 / 上下滚动 / 双页并排，按书保存 */
+    fun setReadMode(book: Book, mode: String) {
+        viewModelScope.launch { runCatching { repo.setReadMode(book.id, mode) } }
     }
 
     /**
@@ -753,10 +795,32 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             val folder = repo.storage.newFolder()
             val dir = repo.storage.dirOf(folder)
             try {
+                // v1.5.5 页级进度：PDF 逐页渲染，1000 页要十几分钟。
+                // 回调每页都会来，但 UI/通知/数据库没必要每页都刷一遍——
+                // 每 5 页或至少间隔 300ms 更新一次，末尾那页强制更新。
+                var lastEmit = 0L
+                var lastDone = 0
                 val pages = withContext(Dispatchers.IO) {
                     work(dir) { done, total ->
-                        _importState.value = ImportUiState.Running(title, done, total)
-                        ImportForegroundService.update("正在导入《$title》 $done/$total")
+                        val now = System.currentTimeMillis()
+                        val isLast = total in 1..done
+                        if (isLast || done - lastDone >= 5 || now - lastEmit >= 300L) {
+                            lastEmit = now
+                            lastDone = done
+                            _importState.value = ImportUiState.Running(title, done, total)
+                            ImportForegroundService.update("正在渲染《$title》 第 $done / $total 页")
+                            if (taskId > 0) {
+                                // 回调不是 suspend，落库丢到 IO 协程里；已经节流到每 5 页/300ms，不会堆任务
+                                val totalNow = total
+                                val doneNow = done
+                                val currentNow = if (isLast) 0 else done + 1
+                                viewModelScope.launch(Dispatchers.IO) {
+                                    runCatching {
+                                        repo.taskProgress(taskId, totalNow, doneNow, currentNow)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 if (pages.isEmpty()) throw IllegalStateException("没有读到任何页面，请确认文件是否损坏")
