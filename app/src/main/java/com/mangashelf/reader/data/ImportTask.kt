@@ -57,5 +57,8 @@ data class ImportTask(
         const val DONE = "DONE"
         const val FAILED = "FAILED"
         const val CANCELLED = "CANCELLED"
+
+        /** v1.5.6：用户主动跳过的书（批次调序/跳过） */
+        const val SKIPPED = "SKIPPED"
     }
 }

@@ -4,6 +4,44 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
+ * v7 → v8：新增 `import_batches`（导入批次表，v1.5.6）。
+ *
+ * 只建新表，不动老表。老版本导入过的记录还留在 `import_tasks` 里、没有对应批次，
+ * 导入历史页会把它们当作「无批次记录」，不影响使用。
+ *
+ * 新表所有 NOT NULL 列都不带 DEFAULT：实体上也没写 `@ColumnInfo(defaultValue=...)`，
+ * 两边逐字一致，避免又踩 ALTER/DEFAULT 子句对不上的坑。
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `import_batches` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `batchId` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                `finishedAt` INTEGER NOT NULL,
+                `sourceType` TEXT NOT NULL,
+                `rootTreeUri` TEXT,
+                `status` TEXT NOT NULL,
+                `totalBooks` INTEGER NOT NULL,
+                `doneBooks` INTEGER NOT NULL,
+                `failedBooks` INTEGER NOT NULL,
+                `skippedBooks` INTEGER NOT NULL,
+                `totalPages` INTEGER NOT NULL,
+                `donePages` INTEGER NOT NULL,
+                `sizeBytes` INTEGER NOT NULL,
+                `elapsedMs` INTEGER NOT NULL,
+                `failReason` TEXT
+            )
+            """.trimIndent()
+        )
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_import_batches_batchId` ON `import_batches` (`batchId`)")
+        database.execSQL("CREATE INDEX IF NOT EXISTS `index_import_batches_createdAt` ON `import_batches` (`createdAt`)")
+    }
+}
+
+/**
  * v6 → v7：作者 / 标签 / 阅读模式，以及导入任务的页级进度。
  *
  * 两张表都走 ALTER：books 被 pages 外键引用（重建要处理外键），import_tasks 本来就只有几行。

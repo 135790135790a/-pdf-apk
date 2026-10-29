@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
@@ -246,6 +247,24 @@ fun ShelfScreen(
         }
     }
 
+    // v1.5.6：一次选多个文件夹，每个文件夹成为一批（批里每个子目录 = 一本书）
+    val foldersPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+            }
+            viewModel.importFolders(uris)
+        }
+    }
+    val launchFolders = { foldersPicker.launch(arrayOf("vnd.android.document/directory")) }
+
     val launchPdf = { pdfPicker.launch(arrayOf("application/pdf")) }
     val launchImages = { imagePicker.launch(arrayOf("image/*")) }
     val launchFolder = { folderPicker.launch(null) }
@@ -263,6 +282,17 @@ fun ShelfScreen(
     }
 
     // 备份 = 一个 zip（含图片）。存到用户选的位置，不依赖账号或服务器
+    val selectMode by viewModel.selectMode.collectAsStateWithLifecycle()
+    val selection by viewModel.selection.collectAsStateWithLifecycle()
+    var showTagDialog by rememberSaveable { mutableStateOf(false) }
+    var confirmDeleteSelected by rememberSaveable { mutableStateOf(false) }
+    var tagText by rememberSaveable { mutableStateOf("") }
+
+    val batchRows by viewModel.batchRows.collectAsStateWithLifecycle()
+    val historyRows by viewModel.history.collectAsStateWithLifecycle()
+    var showQueue by rememberSaveable { mutableStateOf(false) }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+
     val backupState by viewModel.backupState.collectAsStateWithLifecycle()
     val backupCreate = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip")
@@ -483,6 +513,24 @@ fun ShelfScreen(
                     TextButton(onClick = { showImportSortSettings = true }) {
                         Text("导入排序", color = MaterialTheme.colorScheme.onBackground)
                     }
+                    // v1.5.6：批次队列与导入历史
+                    TextButton(onClick = { showQueue = true }) {
+                        Text(
+                            text = if (batchRows.isEmpty()) {
+                                "队列"
+                            } else {
+                                "队列 ${batchRows.count { it.finished }}/${batchRows.size}"
+                            },
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    TextButton(onClick = { showHistory = true }) {
+                        Text("导入历史", color = MaterialTheme.colorScheme.onBackground)
+                    }
+                    // v1.5.6：进入多选，底部会出现批量操作栏
+                    TextButton(onClick = { viewModel.enterSelectMode() }) {
+                        Text("选择", color = MaterialTheme.colorScheme.onBackground)
+                    }
                     // 整库备份 / 恢复（含图片）
                     Box {
                         TextButton(onClick = { showBackupMenu = true }) {
@@ -580,8 +628,13 @@ fun ShelfScreen(
                                 book = book,
                                 coverPath = covers[book.id].orEmpty(),
                                 showCover = !safeMode,
-                                onClick = { onOpenBook(book.id) },
-                                onLongClick = { optionsBookId = book.id }
+                                selected = selection.contains(book.id),
+                                onClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else onOpenBook(book.id)
+                                },
+                                onLongClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else optionsBookId = book.id
+                                }
                             )
                         }
                     }
@@ -605,8 +658,13 @@ fun ShelfScreen(
                                 book = book,
                                 coverPath = covers[book.id].orEmpty(),
                                 showCover = !safeMode,
-                                onClick = { onOpenBook(book.id) },
-                                onLongClick = { optionsBookId = book.id }
+                                selected = selection.contains(book.id),
+                                onClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else onOpenBook(book.id)
+                                },
+                                onLongClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else optionsBookId = book.id
+                                }
                             )
                         }
                     }
@@ -634,12 +692,35 @@ fun ShelfScreen(
                                 showCover = !safeMode,
                                 // 0.60 ~ 0.78 之间按书轮换，相邻两列自然错开
                                 coverRatio = 0.60f + (book.id % 4).toFloat() * 0.06f,
-                                onClick = { onOpenBook(book.id) },
-                                onLongClick = { optionsBookId = book.id }
+                                selected = selection.contains(book.id),
+                                onClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else onOpenBook(book.id)
+                                },
+                                onLongClick = {
+                                    if (selectMode) viewModel.toggleSelect(book.id) else optionsBookId = book.id
+                                }
                             )
                         }
                     }
                 }
+            }
+
+            if (selectMode) {
+                BatchActionBar(
+                    count = selection.size,
+                    total = books.size,
+                    onSelectAll = { viewModel.selectAll() },
+                    onSave = { viewModel.saveSelectedToGallery() },
+                    onTag = {
+                        tagText = ""
+                        showTagDialog = true
+                    },
+                    onDelete = { confirmDeleteSelected = true },
+                    onCancel = { viewModel.exitSelectMode() },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                )
             }
 
             if (safeMode) {
@@ -706,6 +787,16 @@ fun ShelfScreen(
                         Text("批量导入（父文件夹里的每一本）")
                     }
                     Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            showImportDialog = false
+                            launchFolders()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("分批导入（多选文件夹，每夹一批）")
+                    }
+                    Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = {
                             showImportDialog = false
@@ -740,6 +831,82 @@ fun ShelfScreen(
             confirmButton = {
                 TextButton(onClick = { showImportDialog = false }) { Text("取消") }
             }
+        )
+    }
+
+    if (showTagDialog) {
+        AlertDialog(
+            onDismissRequest = { showTagDialog = false },
+            title = { Text("给选中的书打标签") },
+            text = {
+                Column {
+                    Text(
+                        text = "标签会追加到已有标签后面，之后可以在书架搜索框里输入标签来筛书。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = tagText,
+                        onValueChange = { tagText = it },
+                        label = { Text("标签") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.tagSelected(tagText)
+                        showTagDialog = false
+                    },
+                    enabled = tagText.isNotBlank()
+                ) { Text("打标签") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTagDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (confirmDeleteSelected) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteSelected = false },
+            title = { Text("删除 ${selection.size} 本书？") },
+            text = {
+                Text("会同时删掉这些书的图片文件，回收站里不再保留。这个操作不能撤销。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteSelected = false
+                        viewModel.deleteSelected()
+                    }
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteSelected = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showQueue) {
+        BatchQueueDialog(
+            rows = batchRows,
+            onSkip = { viewModel.skipBatch(it) },
+            onRetry = { viewModel.retryBatchRow(it) },
+            onDismiss = { showQueue = false }
+        )
+    }
+
+    if (showHistory) {
+        LaunchedEffect(Unit) { viewModel.refreshHistory() }
+        ImportHistoryDialog(
+            rows = historyRows,
+            onClear = { viewModel.clearImportHistory() },
+            onDismiss = { showHistory = false },
+            onExport = { viewModel.exportReport(context) }
         )
     }
 
@@ -1176,6 +1343,8 @@ private fun BookCard(
     showCover: Boolean,
     /** 封面宽高比。瀑布流里按书取不同比例，让相邻两列错落开 */
     coverRatio: Float = 0.72f,
+    /** v1.5.6 多选：选中时描边 + 右上角打勾 */
+    selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -1183,6 +1352,13 @@ private fun BookCard(
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surface)
+            .then(
+                if (selected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
+                } else {
+                    Modifier
+                }
+            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(8.dp)
     ) {
@@ -1201,6 +1377,23 @@ private fun BookCard(
                 // 封面文件被清掉（比如用户清了 App 存储）时给个纯色块，别闪白也别崩
                 error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
             )
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary)
+                        .padding(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
             if (book.lastPage > 0) {
                 Box(
                     modifier = Modifier
@@ -1250,6 +1443,46 @@ private fun BookCard(
     }
 }
 
+/** v1.5.6：书架多选后的批量操作栏（底部悬浮） */
+@Composable
+private fun BatchActionBar(
+    count: Int,
+    total: Int,
+    onSelectAll: () -> Unit,
+    onSave: () -> Unit,
+    onTag: () -> Unit,
+    onDelete: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 6.dp,
+        shadowElevation = 6.dp
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "已选 $count / $total 本",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onSelectAll) { Text("全选") }
+                TextButton(onClick = onCancel) { Text("取消") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onSave, enabled = count > 0) { Text("存封面") }
+                TextButton(onClick = onTag, enabled = count > 0) { Text("打标签") }
+                TextButton(onClick = onDelete, enabled = count > 0) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
 private fun formatBookDate(at: Long): String =
     java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(at))
 
@@ -1259,6 +1492,7 @@ private fun BookRow(
     book: Book,
     coverPath: String,
     showCover: Boolean,
+    selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -1267,6 +1501,13 @@ private fun BookRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surface)
+            .then(
+                if (selected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                } else {
+                    Modifier
+                }
+            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically

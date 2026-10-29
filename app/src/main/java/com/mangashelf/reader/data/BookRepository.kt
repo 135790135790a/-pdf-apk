@@ -14,6 +14,7 @@ class BookRepository(
     private val dao: BookDao,
     private val pageDao: PageDao,
     private val taskDao: ImportTaskDao,
+    private val batchDao: ImportBatchDao,
     val storage: ComicStorage
 ) {
 
@@ -312,6 +313,99 @@ class BookRepository(
         taskDao.pruneBefore(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000)
     }
 
+    // ---------------------------------------------------------------------
+    // v1.5.6：导入批次（分批导入 / 暂停恢复 / 导入历史）
+    // ---------------------------------------------------------------------
+
+    suspend fun startBatch(
+        batchId: String,
+        sourceType: String,
+        rootTreeUri: String?,
+        totalBooks: Int,
+        totalPages: Int
+    ): Long = withContext(Dispatchers.IO) {
+        batchDao.insert(
+            ImportBatch(
+                batchId = batchId,
+                createdAt = System.currentTimeMillis(),
+                sourceType = sourceType,
+                rootTreeUri = rootTreeUri,
+                status = ImportBatch.RUNNING,
+                totalBooks = totalBooks,
+                totalPages = totalPages
+            )
+        )
+    }
+
+    suspend fun batchOf(batchId: String): ImportBatch? = withContext(Dispatchers.IO) {
+        batchDao.byBatchId(batchId)
+    }
+
+    /** 上次没跑完的批次（QUEUED / RUNNING / PAUSED），启动时恢复用 */
+    suspend fun unfinishedBatches(): List<ImportBatch> = withContext(Dispatchers.IO) {
+        batchDao.unfinished()
+    }
+
+    suspend fun batchStatus(batchId: String, status: String) = withContext(Dispatchers.IO) {
+        batchDao.setStatus(batchId, status)
+    }
+
+    suspend fun batchProgress(batchId: String, doneBooks: Int, donePages: Int) =
+        withContext(Dispatchers.IO) {
+            batchDao.setProgress(batchId, doneBooks, donePages)
+        }
+
+    /**
+     * 批次收尾：状态由计数推断（全成功 DONE / 有成功有失败 PARTIAL / 全失败 FAILED /
+     * 全跳过 CANCELLED），不再让调用方自己拼状态。
+     */
+    suspend fun finishBatch(
+        batchId: String,
+        done: Int,
+        failed: Int,
+        skipped: Int,
+        totalPages: Int,
+        donePages: Int,
+        sizeBytes: Long,
+        elapsedMs: Long,
+        failReason: String?
+    ) = withContext(Dispatchers.IO) {
+        batchDao.finish(
+            batchId = batchId,
+            status = ImportStatusMachine.terminalOf(done, failed, skipped),
+            finishedAt = System.currentTimeMillis(),
+            doneBooks = done,
+            failedBooks = failed,
+            skippedBooks = skipped,
+            totalPages = totalPages,
+            donePages = donePages,
+            sizeBytes = sizeBytes,
+            elapsedMs = elapsedMs,
+            failReason = failReason
+        )
+    }
+
+    // ------------------------------ 导入历史 ------------------------------
+
+    suspend fun historyPage(
+        since: Long,
+        status: String,
+        sourceType: String,
+        limit: Int,
+        offset: Int
+    ): List<ImportBatch> = withContext(Dispatchers.IO) {
+        batchDao.page(since, status, sourceType, limit, offset)
+    }
+
+    suspend fun historyCount(since: Long, status: String, sourceType: String): Int =
+        withContext(Dispatchers.IO) { batchDao.count(since, status, sourceType) }
+
+    /** 清空导入历史（只清记录，不动已导入的书） */
+    suspend fun clearHistory() = withContext(Dispatchers.IO) {
+        batchDao.deleteAll()
+        taskDao.pruneBefore(System.currentTimeMillis())
+    }
+
     /** 删掉没有对应书籍的残留目录（只在启动时、无导入进行中时调用） */
     suspend fun cleanupOrphanFolders(): Int = withContext(Dispatchers.IO) {
         runCatching { storage.cleanupOrphans(dao.allFolders().toSet()) }.getOrDefault(0)
@@ -498,6 +592,9 @@ class BookRepository(
             dao.update(fresh.copy(pageCount = pageCount, coverPageIdx = cover, lastPage = lastPage))
         }
     }
+
+    /** v1.5.6：全部批次（导入历史页用），新的在前 */
+    fun observeBatches(): kotlinx.coroutines.flow.Flow<List<ImportBatch>> = batchDao.observeAll()
 }
 
 /** 书架长按信息面板要展示的统计 */

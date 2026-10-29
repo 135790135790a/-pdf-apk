@@ -12,7 +12,10 @@ import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.data.CoverPrefs
 import com.mangashelf.reader.data.CoverQuality
 import com.mangashelf.reader.data.GalleryExporter
+import com.mangashelf.reader.data.ImportBatch
 import com.mangashelf.reader.data.ImportSortPrefs
+import com.mangashelf.reader.data.ImportStatusMachine
+import com.mangashelf.reader.data.BatchReportExporter
 import com.mangashelf.reader.data.ImportTask
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.data.PageSource
@@ -75,6 +78,50 @@ sealed interface ImportUiState {
 
     data class Failed(val message: String) : ImportUiState
 }
+
+/** v1.5.6：队列里的一批（一个批次 = 用户选的一个文件夹，内含若干本） */
+data class BatchSpec(
+    val batchId: String,
+    val name: String,
+    val sourceTreeUri: Uri,
+    val children: List<FolderImporter.ChildFolder>
+)
+
+/**
+ * v1.5.6：批次在界面上的样子。
+ *
+ * 三级进度里的「批次级」就靠这里的 doneBooks / totalBooks；
+ * 书级和页级仍然走 ImportUiState.Batch。
+ */
+data class BatchRow(
+    val batchId: String,
+    val name: String,
+    val totalBooks: Int,
+    val doneBooks: Int,
+    val failedBooks: Int,
+    val skippedBooks: Int,
+    val status: String,
+    val message: String? = null
+) {
+    val finished: Boolean
+        get() = status == ImportBatch.DONE || status == ImportBatch.PARTIAL ||
+            status == ImportBatch.FAILED || status == ImportBatch.CANCELLED
+
+    val statusLabel: String
+        get() = when (status) {
+            ImportBatch.QUEUED -> "排队中"
+            ImportBatch.RUNNING -> "导入中"
+            ImportBatch.PAUSED -> "已暂停"
+            ImportBatch.DONE -> "已成功"
+            ImportBatch.PARTIAL -> "部分失败"
+            ImportBatch.FAILED -> "失败"
+            ImportBatch.CANCELLED -> "已取消"
+            else -> status
+        }
+}
+
+/** 跑完一批书的计数 */
+data class BatchResult(val done: Int, val failed: Int, val skipped: Int)
 
 /** 上次进程被杀时没导完的一批 */
 data class InterruptedBatch(
@@ -171,6 +218,14 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
 
+    /** v1.5.6：当前批次队列（多文件夹导入时每项一批） */
+    private val _batchRows = MutableStateFlow<List<BatchRow>>(emptyList())
+    val batchRows: StateFlow<List<BatchRow>> = _batchRows.asStateFlow()
+
+    /** v1.5.6：导入历史（import_batches 表，最近 50 批） */
+    private val _history = MutableStateFlow<List<ImportBatch>>(emptyList())
+    val history: StateFlow<List<ImportBatch>> = _history.asStateFlow()
+
     /** 导出到相册的进度（null = 没有在导出） */
     private val _saveState = MutableStateFlow<SaveState?>(null)
     val saveState: StateFlow<SaveState?> = _saveState.asStateFlow()
@@ -178,6 +233,18 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     /** 一次性提示（Toast），UI 消费后调 [clearMessage] */
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /** v1.5.6：导入历史（全部批次，含已结束的） */
+    val batchHistory: StateFlow<List<ImportBatch>> = repo.observeBatches()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** v1.5.6：把导入历史导出成 CSV，成功后用 Toast 告诉用户存哪了 */
+    fun exportReport(context: android.content.Context) {
+        viewModelScope.launch {
+            val where = BatchReportExporter.export(context, batchHistory.value)
+            _message.value = if (where != null) "导入报告已保存到\n$where" else "导出失败，请稍后再试"
+        }
+    }
 
     /** 备份 / 恢复进度 */
     private val _backupState = MutableStateFlow<BackupState?>(null)
@@ -444,6 +511,344 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * v1.5.6：多文件夹分批导入。
+     *
+     * 每选一个文件夹就是一个批次（编号 + 名称 + 书册数 + 状态），批次之间顺序执行：
+     * 可以跳过某一批、也可以只重试失败的那一批。批次记录落 import_batches 表，
+     * 进程被杀后靠它恢复 / 说清楚失败原因。
+     */
+    fun importFolders(uris: List<Uri>) {
+        if (isBusy()) return
+        _batchRows.value = emptyList()
+        importJob = viewModelScope.launch {
+            val specs = ArrayList<BatchSpec>()
+            for ((index, uri) in uris.withIndex()) {
+                val children = withContext(Dispatchers.IO) {
+                    runCatching { FolderImporter.listChildFolders(context, uri) }
+                        .getOrDefault(emptyList())
+                }
+                if (children.isEmpty()) continue
+                val name = withContext(Dispatchers.IO) {
+                    runCatching { DocumentFile.fromTreeUri(context, uri)?.name }.getOrNull()
+                } ?: "文件夹 ${index + 1}"
+                specs += BatchSpec(newBatchId(), name, uri, children)
+            }
+            if (specs.isEmpty()) {
+                _importState.value = ImportUiState.Failed(
+                    "选中的文件夹里没有可导入的内容。\n\n" +
+                        "批量导入要求「父目录 / 每本一个子目录」的结构。"
+                )
+                return@launch
+            }
+            _batchRows.value = specs.map {
+                BatchRow(it.batchId, it.name, it.children.size, 0, 0, 0, ImportBatch.QUEUED)
+            }
+            runBatches(specs)
+        }
+    }
+
+    /** 顺序跑完整个批次队列；每批结束回写终态，批次之间互不影响 */
+    private suspend fun runBatches(specs: List<BatchSpec>) {
+        var importedTotal = 0
+        var failedTotal = 0
+        var skippedTotal = 0
+        for (spec in specs) {
+            val row = _batchRows.value.firstOrNull { it.batchId == spec.batchId } ?: continue
+            // 用户在这批开始前就点了「跳过」
+            if (row.status == ImportBatch.CANCELLED) continue
+
+            val startedAt = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            val ids = runCatching {
+                repo.enqueueTasks(
+                    spec.children.mapIndexed { index, child ->
+                        ImportTask(
+                            batchId = spec.batchId,
+                            title = child.name,
+                            sourceKey = child.key,
+                            sourceTreeUri = spec.sourceTreeUri.toString(),
+                            sourceType = "IMAGE",
+                            sortIndex = index,
+                            status = ImportTask.PENDING,
+                            error = null,
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    }
+                )
+            }.getOrElse { emptyList() }
+
+            runCatching {
+                repo.startBatch(
+                    batchId = spec.batchId,
+                    sourceType = "IMAGE",
+                    rootTreeUri = spec.sourceTreeUri.toString(),
+                    totalBooks = spec.children.size,
+                    totalPages = 0
+                )
+            }
+            updateRow(spec.batchId) { it.copy(status = ImportBatch.RUNNING) }
+
+            val items = spec.children.mapIndexed { index, child ->
+                QueueItem(
+                    taskId = ids.getOrNull(index) ?: -1L,
+                    title = child.name,
+                    uri = spec.sourceTreeUri,
+                    key = child.key
+                )
+            }
+
+            try {
+                val result = runBatch(
+                    batchId = spec.batchId,
+                    items = items,
+                    keepService = true,
+                    suppressFinished = true
+                ) { r ->
+                    updateRow(spec.batchId) {
+                        it.copy(doneBooks = r.done, failedBooks = r.failed, skippedBooks = r.skipped)
+                    }
+                    viewModelScope.launch {
+                        runCatching { repo.batchProgress(spec.batchId, r.done, 0) }
+                    }
+                }
+                importedTotal += result.done
+                failedTotal += result.failed
+                skippedTotal += result.skipped
+
+                val terminal = ImportStatusMachine.terminalOf(result.done, result.failed, result.skipped)
+                updateRow(spec.batchId) {
+                    it.copy(
+                        doneBooks = result.done,
+                        failedBooks = result.failed,
+                        skippedBooks = result.skipped,
+                        status = terminal
+                    )
+                }
+                runCatching {
+                    repo.finishBatch(
+                        batchId = spec.batchId,
+                        done = result.done,
+                        failed = result.failed,
+                        skipped = result.skipped,
+                        totalPages = 0,
+                        donePages = 0,
+                        sizeBytes = 0L,
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        failReason = null
+                    )
+                }
+            } catch (ce: CancellationException) {
+                markBatchCancelled(spec.batchId)
+                throw ce
+            }
+        }
+        _importState.value = ImportUiState.Finished(
+            imported = importedTotal,
+            skipped = skippedTotal,
+            failed = failedTotal,
+            cancelled = false
+        )
+        refreshHistory()
+    }
+
+    private fun updateRow(batchId: String, block: (BatchRow) -> BatchRow) {
+        _batchRows.value = _batchRows.value.map { if (it.batchId == batchId) block(it) else it }
+    }
+
+    private fun markBatchCancelled(batchId: String) {
+        updateRow(batchId) { it.copy(status = ImportBatch.CANCELLED) }
+        viewModelScope.launch { runCatching { repo.batchStatus(batchId, ImportBatch.CANCELLED) } }
+    }
+
+    /** 跳过队列里还没开始的一批（正在跑的那批要先取消整个导入） */
+    fun skipBatch(batchId: String) {
+        val row = _batchRows.value.firstOrNull { it.batchId == batchId } ?: return
+        if (row.status == ImportBatch.RUNNING) {
+            _message.value = "这批正在导入，要跳过请先取消整个导入"
+            return
+        }
+        if (ImportStatusMachine.isTerminal(row.status)) return
+        updateRow(batchId) { it.copy(status = ImportBatch.CANCELLED) }
+        viewModelScope.launch { runCatching { repo.batchStatus(batchId, ImportBatch.CANCELLED) } }
+    }
+
+    /**
+     * 只重试失败的那一批。
+     *
+     * 失败列表从 import_tasks 取（FAILED / PENDING），已成功的书不会再导一遍，
+     * 所以重试是增量的，不会产生重复书。
+     */
+    fun retryBatchRow(row: BatchRow) {
+        if (isBusy()) return
+        importJob = viewModelScope.launch {
+            val tasks = runCatching { repo.tasksOfBatch(row.batchId) }.getOrDefault(emptyList())
+                .filter { it.status == ImportTask.FAILED || it.status == ImportTask.PENDING }
+            if (tasks.isEmpty()) {
+                _message.value = "这一批没有可重试的书"
+                return@launch
+            }
+            runCatching { repo.resetFailed(row.batchId) }
+            updateRow(row.batchId) { it.copy(status = ImportBatch.RUNNING) }
+            runCatching { repo.batchStatus(row.batchId, ImportBatch.RUNNING) }
+            val startedAt = System.currentTimeMillis()
+            val result = runBatch(
+                batchId = row.batchId,
+                items = tasks.map {
+                    QueueItem(
+                        taskId = it.id,
+                        title = it.title,
+                        uri = it.sourceTreeUri?.let { raw -> runCatching { Uri.parse(raw) }.getOrNull() },
+                        key = it.sourceKey
+                    )
+                }
+            ) { r ->
+                updateRow(row.batchId) { it.copy(doneBooks = r.done, failedBooks = r.failed) }
+            }
+            updateRow(row.batchId) {
+                it.copy(
+                    doneBooks = result.done,
+                    failedBooks = result.failed,
+                    skippedBooks = result.skipped,
+                    status = ImportStatusMachine.terminalOf(result.done, result.failed, result.skipped)
+                )
+            }
+            runCatching {
+                repo.finishBatch(
+                    batchId = row.batchId,
+                    done = result.done,
+                    failed = result.failed,
+                    skipped = result.skipped,
+                    totalPages = 0,
+                    donePages = 0,
+                    sizeBytes = 0L,
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    failReason = null
+                )
+            }
+            refreshHistory()
+        }
+    }
+
+    /** 打开导入历史页时刷新一次 */
+    fun refreshHistory() {
+        viewModelScope.launch {
+            _history.value = runCatching {
+                repo.historyPage(since = 0L, status = "", sourceType = "", limit = 50, offset = 0)
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // v1.5.6：书架多选与批量操作
+    // ------------------------------------------------------------------
+
+    /** 多选模式开关（进入模式后可以是空集，等用户点书） */
+    private val _selectMode = MutableStateFlow(false)
+    val selectMode: StateFlow<Boolean> = _selectMode.asStateFlow()
+
+    /** 多选模式里选中的书 id */
+    private val _selection = MutableStateFlow<Set<Long>>(emptySet())
+    val selection: StateFlow<Set<Long>> = _selection.asStateFlow()
+
+    fun enterSelectMode() {
+        _selectMode.value = true
+    }
+
+    fun exitSelectMode() {
+        _selectMode.value = false
+        _selection.value = emptySet()
+    }
+
+    fun toggleSelect(bookId: Long) {
+        _selection.value = _selection.value.let { cur ->
+            if (cur.contains(bookId)) cur - bookId else cur + bookId
+        }
+    }
+
+    fun selectAll() {
+        _selection.value = books.value.map { it.id }.toSet()
+    }
+
+    fun clearSelection() {
+        _selection.value = emptySet()
+    }
+
+    /**
+     * 批量删除。每本单独走 [BookRepository.delete]（它会顺带清 pages 行和图片目录），
+     * 一本失败不影响其它本；最后按成功数给提示。
+     */
+    fun deleteSelected() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val targets = books.value.filter { ids.contains(it.id) }
+        viewModelScope.launch {
+            var ok = 0
+            var bad = 0
+            for (book in targets) {
+                runCatching { repo.delete(book) }
+                    .onSuccess { ok++ }
+                    .onFailure { bad++ }
+            }
+            _selection.value = emptySet()
+            _selectMode.value = false
+            _message.value = if (bad == 0) {
+                "已删除 $ok 本"
+            } else {
+                "已删除 $ok 本，$bad 本失败"
+            }
+        }
+    }
+
+    /** 批量导出封面到相册（只导第一页，避免一次几千张） */
+    fun saveSelectedToGallery() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        if (_saveState.value != null) return
+        val targets = books.value.filter { ids.contains(it.id) }
+        viewModelScope.launch {
+            var ok = 0
+            _saveState.value = SaveState("选中的 ${targets.size} 本", 0, targets.size)
+            for ((index, book) in targets.withIndex()) {
+                _saveState.value = SaveState("选中的 ${targets.size} 本", index, targets.size)
+                val files = runCatching { repo.pageFiles(book) }.getOrDefault(emptyList())
+                if (files.isEmpty()) continue
+                runCatching { GalleryExporter.export(context, book.title, files.take(1)) { _, _ -> } }
+                    .onSuccess { if (it > 0) ok++ }
+            }
+            _saveState.value = null
+            _selection.value = emptySet()
+            _selectMode.value = false
+            _message.value = "已保存 $ok 本封面到相册"
+        }
+    }
+
+    /** 批量打标签（分类），标签会追加到已有标签后面 */
+    fun tagSelected(tag: String) {
+        val ids = _selection.value
+        val clean = tag.trim()
+        if (ids.isEmpty() || clean.isEmpty()) return
+        val targets = books.value.filter { ids.contains(it.id) }
+        viewModelScope.launch {
+            for (book in targets) {
+                val merged = if (book.tags.isBlank()) clean else "${book.tags}, $clean"
+                runCatching { repo.updateMeta(book.id, book.author, merged) }
+            }
+            _selection.value = emptySet()
+            _selectMode.value = false
+            _message.value = "已给 ${targets.size} 本加上标签「$clean」"
+        }
+    }
+
+    fun clearImportHistory() {
+        viewModelScope.launch {
+            runCatching { repo.clearHistory() }
+            _history.value = emptyList()
+            _message.value = "导入历史已清空（已导入的书不受影响）"
+        }
+    }
+
     /** 重试上次被中断的一批 */
     fun retryInterrupted() {
         val info = _interrupted.value ?: return
@@ -547,7 +952,13 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
      * 每本的状态都会写回 import_tasks：DONE / FAILED(带原因)。
      * 进程在这一步被杀，下次启动就能靠这些行说清楚差在哪。
      */
-    private suspend fun runBatch(batchId: String, items: List<QueueItem>) {
+    private suspend fun runBatch(
+        batchId: String,
+        items: List<QueueItem>,
+        keepService: Boolean = false,
+        suppressFinished: Boolean = false,
+        onBookFinished: ((BatchResult) -> Unit)? = null
+    ): BatchResult {
         var imported = 0
         var skipped = 0
         var failed = 0
@@ -557,6 +968,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
         try {
             for ((index, item) in items.withIndex()) {
+                // 批次级进度：每本书开始前把上一本的结果交给调用方（界面/数据库）
+                onBookFinished?.invoke(BatchResult(imported, failed, skipped))
                 awaitResume(index, items.size, skipped)
 
                 // 断点续传：同一本已经导过就不再重复导入
@@ -575,7 +988,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     _importState.value = ImportUiState.Failed(
                         message + "\n\n已导入 $imported 本，剩下的没有继续。"
                     )
-                    return
+                    return BatchResult(imported, failed, skipped)
                 }
 
                 val uri = item.uri
@@ -666,13 +1079,15 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             runCatching { repo.cancelPending(batchId) }
-            _importState.value = ImportUiState.Finished(
-                imported = imported,
-                skipped = skipped,
-                failed = failed,
-                cancelled = false,
-                batchId = batchId
-            )
+            if (!suppressFinished) {
+                _importState.value = ImportUiState.Finished(
+                    imported = imported,
+                    skipped = skipped,
+                    failed = failed,
+                    cancelled = false,
+                    batchId = batchId
+                )
+            }
         } catch (ce: CancellationException) {
             currentDir?.let { dir ->
                 withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
@@ -688,11 +1103,15 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             throw ce
         } catch (t: Throwable) {
             runCatching { repo.cancelPending(batchId) }
-            _importState.value = ImportUiState.Failed(t.message ?: "批量导入失败")
+            if (!suppressFinished) {
+                _importState.value = ImportUiState.Failed(t.message ?: "批量导入失败")
+            }
         } finally {
             paused.value = false
-            ImportForegroundService.stop(context)
+            // 多批次连续导入时服务由外层统一管，这里不能停，否则第二本开始前前台服务就没了
+            if (!keepService) ImportForegroundService.stop(context)
         }
+        return BatchResult(imported, failed, skipped)
     }
 
     // ------------------------------------------------------------------

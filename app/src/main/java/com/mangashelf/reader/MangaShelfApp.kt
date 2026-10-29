@@ -79,6 +79,7 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
             dao = database.bookDao(),
             pageDao = database.pageDao(),
             taskDao = database.importTaskDao(),
+            batchDao = database.importBatchDao(),
             storage = ComicStorage(this)
         )
     }
