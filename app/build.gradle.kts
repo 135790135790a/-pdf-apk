@@ -18,10 +18,13 @@ android {
     // ---------------------------------------------------------------------
     signingConfigs {
         create("app") {
-            storeFile = rootProject.file("keystore/mangashelf.jks")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            // CI 上可以用 Secrets 覆盖这几个值；本地构建没有对应环境变量时，
+            // 回退到随工程走的 keystore/mangashelf.jks（v1.3 起就跟着仓库走）。
+            val envStore = System.getenv("KEYSTORE_FILE")
+            storeFile = if (envStore != null) file(envStore) else rootProject.file("keystore/mangashelf.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
         }
     }
 
@@ -29,8 +32,8 @@ android {
         applicationId = "com.mangashelf.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 16
-        versionName = "1.5.5"
+        versionCode = 17
+        versionName = "1.5.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

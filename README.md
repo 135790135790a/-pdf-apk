@@ -6,7 +6,7 @@
 
 | | |
 | :-- | :-- |
-| **最新版本** | v1.5.5（versionCode 16） |
+| **最新版本** | v1.5.6（versionCode 17） |
 | **安装包** | 6.98 MB · 直接覆盖安装，数据不丢 |
 | **系统要求** | Android 7.0+（minSdk 24），targetSdk 34 |
 | **技术栈** | Kotlin · Jetpack Compose (Material 3) · Room · Coil · PdfRenderer |
@@ -21,6 +21,23 @@
 ---
 
 ## 1. 功能清单
+
+### 批量导入与多选（v1.5.6 新增）
+
+| 能力 | 说明 |
+| --- | --- |
+| 多文件夹一次选 | 文件选择器里长按多选文件夹，每个文件夹排成一批，批里每个子目录是一本书 |
+| 批次队列 | 右上「批次」打开，可上移/下移调顺序、跳过某一批、单独重试失败那批 |
+| 三级进度 | 批次（第几批/共几批）→ 书册（第几本/共几本）→ 页（第几页/共几页） |
+| 暂停 / 继续 | 只在**书册边界**生效（当前这本导完才停），通知栏也能点 |
+| 中断恢复 | 进程被杀后重开，上次没导完的批次会浮到书架顶部，可重试或跳过 |
+| 导入历史 | 独立整页：环形图按 来源/格式/结果 三个维度统计，可筛选、分页、导出 CSV |
+| 书架多选 | 顶栏「选择」进入，卡片描边打勾，底部可批量存封面 / 打标签 / 删除 |
+
+> 为什么暂停不在「页中间」生效：一页正在渲染时打断会留下半张图，恢复时还得判断哪页写到一半。
+> 停在书册边界，恢复逻辑就只是「从下一本书继续」，不会出现半成品。
+
+
 
 ### 书架
 
@@ -246,10 +263,10 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.mangashelf.reader` |
-| 版本 | 1.5.2（versionCode 11） |
+| 版本 | 1.5.6（versionCode 17） |
 | 系统要求 | Android 7.0+（minSdk 24），targetSdk 34 |
 | 签名 | Android Debug 证书（个人自用没问题） |
-| 大小 | 6.89 MB（release，未开 R8；见下方说明） |
+| 大小 | 7.06 MB（7,400,355 字节，release，未开 R8；见下方说明） |
 | 图标 | 企鹅娘（由 `企鹅娘-无水印.png` 生成，v1.2 起固定使用） |
 
 > 因为用的是 debug 签名，以后要**覆盖安装**必须用同一个 debug key 签名的包；
@@ -269,6 +286,25 @@ cd "C:\Users\86139\Desktop\deepseek\漫画书翻译"
 ```
 
 需要 JDK 17。用 Android Studio 打开这个目录也可以（`File > Open` → Sync → Run）。
+
+### 用 GitHub Actions 自动构建（可选）
+
+仓库带了两条流水线（`.github/workflows/android.yml`）：
+
+- **平时 push / PR**：跑单测 + 打 debug 包，几分钟出结果；
+- **打 tag（`v*`）**：跑 lint + 单测 + `assembleRelease`，并把 APK 传到对应的 Release。
+
+签名默认用仓库里的 `keystore/mangashelf.jks`。想改成用 Secrets 托管，在
+`Settings → Secrets and variables → Actions` 里配好这四个，CI 会自动优先用它们：
+
+| Secret | 说明 |
+| --- | --- |
+| `KEYSTORE_BASE64` | `base64 -w0 keystore/mangashelf.jks` 的结果 |
+| `KEYSTORE_PASSWORD` | keystore 口令 |
+| `KEY_ALIAS` | key 别名 |
+| `KEY_PASSWORD` | key 口令 |
+
+没有配置时流水线不会失败，只在日志里打一条 warning 并回退到仓库内的 keystore。
 
 ### 路 B：不装 App，用手机浏览器（局域网）
 

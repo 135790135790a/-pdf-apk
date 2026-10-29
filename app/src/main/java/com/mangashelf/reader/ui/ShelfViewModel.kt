@@ -16,6 +16,8 @@ import com.mangashelf.reader.data.ImportBatch
 import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.ImportStatusMachine
 import com.mangashelf.reader.data.BatchReportExporter
+import com.mangashelf.reader.service.ImportControl
+import com.mangashelf.reader.service.ImportForegroundService
 import com.mangashelf.reader.data.ImportTask
 import com.mangashelf.reader.data.PageSortMode
 import com.mangashelf.reader.data.PageSource
@@ -25,7 +27,6 @@ import com.mangashelf.reader.importer.FolderImporter
 import com.mangashelf.reader.importer.ImageImporter
 import com.mangashelf.reader.importer.PdfImporter
 import com.mangashelf.reader.importer.StorageGuard
-import com.mangashelf.reader.service.ImportForegroundService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -234,6 +235,14 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    /**
+     * v1.5.6：批量操作门闩。
+     *
+     * 为什么需要：删除/存相册/打标签都是「对一批书挨个动手」，用户连点两下按钮会并发跑两份，
+     * 结果是同一个文件删两次、同一本书加两遍标签。用 CAS 抢锁，抢不到直接忽略这次点击。
+     */
+    private val batchLatch = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** v1.5.6：导入历史（全部批次，含已结束的） */
     val batchHistory: StateFlow<List<ImportBatch>> = repo.observeBatches()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -351,6 +360,11 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
      * `ShelfViewModel.<init> → refreshCovers → CombineKt$combineInternal$2$1.invokeSuspend(Combine.kt:31)`。
      */
     init {
+        // v1.5.6：通知栏的「暂停/继续」通过 ImportControl 转进来
+        ImportControl.onPause = { pauseImport() }
+        ImportControl.onResume = { resumeImport() }
+        ImportControl.paused = false
+
         checkInterrupted()
         refreshCovers()
     }
@@ -782,21 +796,26 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteSelected() {
         val ids = _selection.value
         if (ids.isEmpty()) return
+        if (!batchLatch.compareAndSet(false, true)) return
         val targets = books.value.filter { ids.contains(it.id) }
         viewModelScope.launch {
-            var ok = 0
-            var bad = 0
-            for (book in targets) {
-                runCatching { repo.delete(book) }
-                    .onSuccess { ok++ }
-                    .onFailure { bad++ }
-            }
-            _selection.value = emptySet()
-            _selectMode.value = false
-            _message.value = if (bad == 0) {
-                "已删除 $ok 本"
-            } else {
-                "已删除 $ok 本，$bad 本失败"
+            try {
+                var ok = 0
+                var bad = 0
+                for (book in targets) {
+                    runCatching { repo.delete(book) }
+                        .onSuccess { ok++ }
+                        .onFailure { bad++ }
+                }
+                _selection.value = emptySet()
+                _selectMode.value = false
+                _message.value = if (bad == 0) {
+                    "已删除 $ok 本"
+                } else {
+                    "已删除 $ok 本，$bad 本失败"
+                }
+            } finally {
+                batchLatch.set(false)
             }
         }
     }
@@ -806,6 +825,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         val ids = _selection.value
         if (ids.isEmpty()) return
         if (_saveState.value != null) return
+        if (!batchLatch.compareAndSet(false, true)) return
         val targets = books.value.filter { ids.contains(it.id) }
         viewModelScope.launch {
             var ok = 0
@@ -821,6 +841,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
             _selection.value = emptySet()
             _selectMode.value = false
             _message.value = "已保存 $ok 本封面到相册"
+            batchLatch.set(false)
         }
     }
 
@@ -829,15 +850,21 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         val ids = _selection.value
         val clean = tag.trim()
         if (ids.isEmpty() || clean.isEmpty()) return
+        if (!batchLatch.compareAndSet(false, true)) return
         val targets = books.value.filter { ids.contains(it.id) }
         viewModelScope.launch {
-            for (book in targets) {
-                val merged = if (book.tags.isBlank()) clean else "${book.tags}, $clean"
-                runCatching { repo.updateMeta(book.id, book.author, merged) }
+            try {
+                var ok = 0
+                for (book in targets) {
+                    val merged = if (book.tags.isBlank()) clean else "${book.tags}, $clean"
+                    runCatching { repo.updateMeta(book.id, book.author, merged) }.onSuccess { ok++ }
+                }
+                _selection.value = emptySet()
+                _selectMode.value = false
+                _message.value = "已给 $ok 本加上标签「$clean」"
+            } finally {
+                batchLatch.set(false)
             }
-            _selection.value = emptySet()
-            _selectMode.value = false
-            _message.value = "已给 ${targets.size} 本加上标签「$clean」"
         }
     }
 
@@ -905,17 +932,33 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun pauseImportFromNotification() = pauseImport()
+
+    fun resumeImportFromNotification() = resumeImport()
+
     fun pauseImport() {
         if (importJob?.isActive != true) return
         paused.value = true
+        ImportControl.paused = true
+        // 通知栏也换文案和按钮，否则用户在通知栏看不出已经停了
+        ImportForegroundService.update("已暂停 · 点「继续」接着导", true)
     }
 
     fun resumeImport() {
         paused.value = false
+        ImportControl.paused = false
+        ImportForegroundService.update("正在导入漫画…", false)
     }
 
     fun cancelImport() {
         importJob?.cancel()
+    }
+
+    override fun onCleared() {
+        // v1.5.6：ViewModel 没了就摘掉通知栏回调，别让 Service 拽着已销毁的实例
+        ImportControl.onPause = null
+        ImportControl.onResume = null
+        super.onCleared()
     }
 
     fun dismissImportDialog() {

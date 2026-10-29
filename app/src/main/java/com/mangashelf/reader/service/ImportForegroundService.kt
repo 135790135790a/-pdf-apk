@@ -20,6 +20,9 @@ import com.mangashelf.reader.MainActivity
  * 这样用户切去微信、锁屏、或者系统内存吃紧时，导入不会被当成后台进程收掉。
  *
  * 它自己不干活：真正的导入仍然跑在 ShelfViewModel 的协程里，这个服务只负责保命。
+ *
+ * v1.5.6 起通知栏多了一个「暂停 / 继续」按钮：导入可能跑几十分钟，用户想停下来
+ * 干别的事不该只能取消（取消会把当前这本的进度丢掉）。
  */
 class ImportForegroundService : Service() {
 
@@ -27,6 +30,9 @@ class ImportForegroundService : Service() {
         private const val CHANNEL_ID = "import_progress"
         private const val NOTIFICATION_ID = 2001
         private const val EXTRA_TEXT = "text"
+        private const val EXTRA_PAUSED = "paused"
+        private const val ACTION_PAUSE = "com.mangashelf.reader.action.PAUSE_IMPORT"
+        private const val ACTION_RESUME = "com.mangashelf.reader.action.RESUME_IMPORT"
 
         /**
          * 当前活着的实例。
@@ -53,9 +59,9 @@ class ImportForegroundService : Service() {
             }
         }
 
-        /** 刷新通知文案；服务没在跑就忽略（导入结束、或用户收回了通知权限） */
-        fun update(text: String) {
-            runCatching { instance?.refresh(text) }
+        /** 刷新通知文案 / 暂停按钮；服务没在跑就忽略（导入结束、或用户收回了通知权限） */
+        fun update(text: String, paused: Boolean = ImportControl.paused) {
+            runCatching { instance?.refresh(text, paused) }
         }
 
         fun stop(context: Context) {
@@ -73,8 +79,8 @@ class ImportForegroundService : Service() {
     }
 
     /** 把最新进度写到通知上 */
-    private fun refresh(text: String) {
-        runCatching { startForegroundCompat(buildNotification(text)) }
+    private fun refresh(text: String, paused: Boolean) {
+        runCatching { startForegroundCompat(buildNotification(text, paused)) }
     }
 
     private fun startForegroundCompat(notification: Notification): Boolean = runCatching {
@@ -91,10 +97,23 @@ class ImportForegroundService : Service() {
     }.getOrDefault(false)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 通知栏按钮点进来时 intent 里只有 action，没有文字 —— 这种请求不该重建通知
+        when (intent?.action) {
+            ACTION_PAUSE -> {
+                ImportControl.onPause?.invoke()
+                return START_NOT_STICKY
+            }
+            ACTION_RESUME -> {
+                ImportControl.onResume?.invoke()
+                return START_NOT_STICKY
+            }
+        }
+
         val text = intent?.getStringExtra(EXTRA_TEXT).orEmpty().ifBlank { "正在导入漫画…" }
+        val paused = intent?.getBooleanExtra(EXTRA_PAUSED, false) ?: false
         ensureChannel()
         instance = this
-        val started = startForegroundCompat(buildNotification(text))
+        val started = startForegroundCompat(buildNotification(text, paused))
 
         if (!started) {
             // 前台服务起不来（权限被收回、系统限制）时自己退出。
@@ -120,7 +139,7 @@ class ImportForegroundService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(text: String, paused: Boolean): Notification {
         // 点通知回到书架：导入结果就显示在书架上，不需要单独的结果页
         val open = PendingIntent.getActivity(
             this,
@@ -129,11 +148,37 @@ class ImportForegroundService : Service() {
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // 暂停/继续按钮：两个 action 各自发一个 startService 请求，由 onStartCommand 转给 ViewModel
+        val toggle = if (paused) {
+            NotificationCompat.Action(
+                0,
+                "继续",
+                PendingIntent.getService(
+                    this,
+                    2,
+                    Intent(this, ImportForegroundService::class.java).setAction(ACTION_RESUME),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+        } else {
+            NotificationCompat.Action(
+                0,
+                "暂停",
+                PendingIntent.getService(
+                    this,
+                    1,
+                    Intent(this, ImportForegroundService::class.java).setAction(ACTION_PAUSE),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("漫画书架")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentIntent(open)
+            .addAction(toggle)
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
