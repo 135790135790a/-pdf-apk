@@ -43,13 +43,82 @@ object FolderImporter {
         destDir: File,
         onProgress: (done: Int, total: Int) -> Unit
     ): List<PageSource> = withContext(Dispatchers.IO) {
-        destDir.mkdirs()
-
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: throw IllegalStateException("打不开这个文件夹")
+        importDir(context, root, destDir, onProgress)
+    }
+
+    /**
+     * 父文件夹下的一个子文件夹 = 一本书（批量导入用）。
+     *
+     * @param name 子文件夹名（即书名）
+     * @param key  稳定的去重键（DocumentId，如 `primary:Comics/OP1`），换机器/重装后仍一致
+     */
+    class ChildFolder(val name: String, val key: String)
+
+    /**
+     * 列出父文件夹下所有**直接子文件夹**，按名称自然排序。
+     *
+     * 这正是「海贼王 1-100 卷」那种结构：父目录里每个子目录是一本。
+     * 父目录里直接散放的图片不在这里返回——那种情况仍走单本 [import]。
+     *
+     * 这里只返回 DocumentId，不返回子目录的 tree URI：SAF 只授权了用户选中的
+     * 那一棵树，子目录的 tree URI 没有 grant，拿它去 listFiles() 会被拒。
+     * 真正读取时用 [importChild] 从父树往下定位。
+     */
+    suspend fun listChildFolders(context: Context, rootTreeUri: Uri): List<ChildFolder> {
+        val root = DocumentFile.fromTreeUri(context, rootTreeUri) ?: return emptyList()
+        val children = runCatching { root.listFiles() }.getOrNull() ?: return emptyList()
+
+        val out = ArrayList<ChildFolder>(32)
+        var scanned = 0
+        for (child in children) {
+            // 父目录下有几百个子文件夹时，遍历本身也可能要好几秒
+            if (++scanned % 64 == 0) yield()
+            if (!child.isDirectory) continue
+            val name = child.name?.trim().orEmpty()
+            if (name.isEmpty() || name.startsWith(".")) continue
+            val key = runCatching { DocumentsContract.getDocumentId(child.uri) }.getOrNull()
+            if (key.isNullOrBlank()) continue
+            out.add(ChildFolder(name, key))
+        }
+        return out.sortedWith { a, b -> compareNatural(a.name, b.name) }
+    }
+
+    /**
+     * 批量导入：从已授权的父树里取出 documentId 对应的子文件夹，当成一本书导入。
+     *
+     * 必须走父树（[parentTreeUri] 是用户当初在系统选择器里选中的那棵树），
+     * 不能对子目录另造 tree URI——那会丢授权，所有子目录都会被判成「没有图片」。
+     */
+    suspend fun importChild(
+        context: Context,
+        parentTreeUri: Uri,
+        childDocId: String,
+        destDir: File,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): List<PageSource> = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, parentTreeUri)
+            ?: throw IllegalStateException("打不开父文件夹")
+        val children = runCatching { root.listFiles() }.getOrNull()
+            ?: throw IllegalStateException("读不到父文件夹里的内容，请重新选择父文件夹")
+        val target = children.firstOrNull {
+            runCatching { DocumentsContract.getDocumentId(it.uri) }.getOrNull() == childDocId
+        } ?: throw IllegalStateException("找不到子文件夹，可能已被移动或删除")
+        importDir(context, target, destDir, onProgress)
+    }
+
+    /** 真正读一本：dir 必须是已授权的树（或父树下的子节点），递归收集图片并转码 */
+    private suspend fun importDir(
+        context: Context,
+        dir: DocumentFile,
+        destDir: File,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): List<PageSource> {
+        destDir.mkdirs()
 
         val found = ArrayList<Entry>(64)
-        collect(root, "", found, 0)
+        collect(dir, "", found, 0)
         if (found.isEmpty()) {
             throw IllegalStateException("这个文件夹里没有图片（支持 jpg/png/webp/bmp/gif/avif/tif）")
         }
@@ -83,7 +152,7 @@ object FolderImporter {
             onProgress(index + 1, ordered.size)
         }
         if (out.isEmpty()) throw IllegalStateException("这个文件夹里的图片都读不出来")
-        out
+        return out
     }
 
     private class Entry(
@@ -92,44 +161,6 @@ object FolderImporter {
         val size: Long,
         val modified: Long
     )
-
-    /**
-     * 父文件夹下的一个子文件夹 = 一本书（批量导入用）。
-     *
-     * @param name   子文件夹名（即书名）
-     * @param treeUri 可以直接交给 [import] 的 tree URI
-     * @param key    稳定的去重键（DocumentId，如 `primary:Comics/OP1`），换机器/重装后仍一致
-     */
-    class ChildFolder(val name: String, val treeUri: Uri, val key: String)
-
-    /**
-     * 列出父文件夹下所有**直接子文件夹**，按名称自然排序。
-     *
-     * 这正是「海贼王 1-100 卷」那种结构：父目录里每个子目录是一本。
-     * 父目录里直接散放的图片不在这里返回——那种情况仍走单本 [import]。
-     */
-    suspend fun listChildFolders(context: Context, rootTreeUri: Uri): List<ChildFolder> {
-        val root = DocumentFile.fromTreeUri(context, rootTreeUri) ?: return emptyList()
-        val authority = rootTreeUri.authority ?: return emptyList()
-        val children = runCatching { root.listFiles() }.getOrNull() ?: return emptyList()
-
-        val out = ArrayList<ChildFolder>(32)
-        var scanned = 0
-        for (child in children) {
-            // 父目录下有几百个子文件夹时，遍历本身也可能要好几秒
-            if (++scanned % 64 == 0) yield()
-            if (!child.isDirectory) continue
-            val name = child.name?.trim().orEmpty()
-            if (name.isEmpty() || name.startsWith(".")) continue
-            val key = runCatching { DocumentsContract.getDocumentId(child.uri) }.getOrNull()
-            val tree = runCatching {
-                DocumentsContract.buildTreeDocumentUri(authority, DocumentsContract.getDocumentId(child.uri))
-            }.getOrNull()
-            if (key == null || tree == null) continue
-            out.add(ChildFolder(name, tree, key))
-        }
-        return out.sortedWith { a, b -> compareNatural(a.name, b.name) }
-    }
 
     private suspend fun collect(dir: DocumentFile, prefix: String, out: MutableList<Entry>, depth: Int) {
         if (depth > MAX_DEPTH) return

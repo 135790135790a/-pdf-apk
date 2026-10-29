@@ -239,11 +239,6 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
     private var importJob: Job? = null
     private val paused = MutableStateFlow(false)
 
-    init {
-        checkInterrupted()
-        refreshCovers()
-    }
-
     /**
      * 封面缓存：v5 起封面可能是任意一页（「设为封面」），路径要查数据库，
      * 不能在 composition 里同步查，所以在这里批量预热，UI 只读缓存。
@@ -262,15 +257,36 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshCovers() {
         viewModelScope.launch {
-            combine(repo.observeBooks(), _coverQuality) { list, quality -> list to quality }
-                .collectLatest { (list, quality) ->
-                    val map = list.associate { it.id to repo.coverPathOf(it, quality) }
-                    _covers.value = map
-                }
+            try {
+                combine(repo.observeBooks(), _coverQuality) { list, quality -> list to quality }
+                    .collectLatest { (list, quality) ->
+                        val map = list.associate { it.id to repo.coverPathOf(it, quality) }
+                        _covers.value = map
+                    }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                // 封面表只决定书架上的缩略图路径，查不出来最多显示占位图，
+                // 绝不能因为它把整个书架（以及 App 启动）带崩。
+                _covers.value = emptyMap()
+            }
         }
     }
 
     fun coverOf(bookId: Long): String = _covers.value[bookId] ?: ""
+
+    /**
+     * v1.5.5 修复：启动预取必须放在所有属性声明之后。
+     *
+     * 原来这段 init 写在文件中部（`_covers` / `_coverQuality` 声明之前），
+     * Kotlin 按源码顺序执行初始化，init 先跑时 `_coverQuality` 还是 JVM 默认值 null，
+     * `combine()` 内部对 null 调 `Flow.collect` → 冷启动必崩：
+     * `ShelfViewModel.<init> → refreshCovers → CombineKt$combineInternal$2$1.invokeSuspend(Combine.kt:31)`。
+     */
+    init {
+        checkInterrupted()
+        refreshCovers()
+    }
 
     /**
      * 切到某个排序：点的是当前排序就翻转方向，点别的就换成它并重置为该排序的默认方向。
@@ -403,7 +419,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                             batchId = batchId,
                             title = child.name,
                             sourceKey = child.key,
-                            sourceTreeUri = child.treeUri.toString(),
+                            // 存父树：子目录的 tree URI 没有 SAF 授权，重试时会打不开
+                            sourceTreeUri = parentTreeUri.toString(),
                             sourceType = "IMAGE",
                             sortIndex = index,
                             status = ImportTask.PENDING,
@@ -419,7 +436,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                 QueueItem(
                     taskId = ids.getOrNull(index) ?: -1L,
                     title = child.name,
-                    uri = child.treeUri,
+                    uri = parentTreeUri,
                     key = child.key
                 )
             }
@@ -568,6 +585,14 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     continue
                 }
 
+                // 批量导入靠 DocumentId 在父树里定位子文件夹
+                val childKey = item.key
+                if (childKey == null) {
+                    failed++
+                    if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.FAILED, "来源已失效")
+                    continue
+                }
+
                 if (item.taskId > 0) repo.taskStatus(item.taskId, ImportTask.RUNNING)
 
                 val folder = repo.storage.newFolder()
@@ -576,7 +601,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
                 val pages = try {
                     withContext(Dispatchers.IO) {
-                        FolderImporter.import(context, uri, dir) { done, total ->
+                        FolderImporter.importChild(context, uri, childKey, dir) { done, total ->
                             _importState.value = ImportUiState.Batch(
                                 index = index + 1,
                                 total = items.size,
