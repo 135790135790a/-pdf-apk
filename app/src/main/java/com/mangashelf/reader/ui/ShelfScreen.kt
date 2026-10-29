@@ -290,6 +290,8 @@ fun ShelfScreen(
 
     val batchRows by viewModel.batchRows.collectAsStateWithLifecycle()
     val historyRows by viewModel.history.collectAsStateWithLifecycle()
+    val batchHistory by viewModel.batchHistory.collectAsStateWithLifecycle()
+    var showHistoryPage by rememberSaveable { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
 
@@ -334,6 +336,17 @@ fun ShelfScreen(
         } else {
             viewModel.saveToGallery(book, allPages)
         }
+    }
+
+    // v1.5.6：导入历史做成独立整页，饼图要有地方画
+    if (showHistoryPage) {
+        BatchHistoryScreen(
+            batches = batchHistory,
+            onBack = { showHistoryPage = false },
+            onClear = { viewModel.clearImportHistory() },
+            onExport = { viewModel.exportReport(context) }
+        )
+        return
     }
 
     Scaffold(
@@ -524,7 +537,7 @@ fun ShelfScreen(
                             color = MaterialTheme.colorScheme.onBackground
                         )
                     }
-                    TextButton(onClick = { showHistory = true }) {
+                    TextButton(onClick = { showHistoryPage = true }) {
                         Text("导入历史", color = MaterialTheme.colorScheme.onBackground)
                     }
                     // v1.5.6：进入多选，底部会出现批量操作栏
