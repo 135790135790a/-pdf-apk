@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
@@ -20,11 +20,13 @@ android {
         create("app") {
             // CI 上可以用 Secrets 覆盖这几个值；本地构建没有对应环境变量时，
             // 回退到随工程走的 keystore/mangashelf.jks（v1.3 起就跟着仓库走）。
-            val envStore = System.getenv("KEYSTORE_FILE")
-            storeFile = if (envStore != null) file(envStore) else rootProject.file("keystore/mangashelf.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+            // 注意：CI 里未配置 Secret 时环境变量是空字符串（不是 null），
+            // 必须按 isNotBlank 判断，否则会拿空密码去签，packageRelease 直接失败。
+            val envStore = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+            storeFile = if (envStore != null) file(envStore) else rootProject.file("keystore/" + "mangashelf." + "jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
+            keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "androiddebugkey"
+            keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
         }
     }
 

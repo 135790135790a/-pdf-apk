@@ -11,3 +11,9 @@ local.properties
 
 # 安装包不进仓库，统一走 GitHub Releases
 *.apk
+
+# 签名文件不进仓库（公开仓库，泄露等于把升级签名权交出去）
+# 本地构建：把自签名文件放在 keystore/ 下即可，build.gradle.kts 会自动找
+keystore/
+*.keystore
+*.p12
