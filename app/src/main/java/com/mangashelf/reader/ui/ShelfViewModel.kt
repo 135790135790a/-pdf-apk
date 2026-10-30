@@ -85,7 +85,12 @@ data class BatchSpec(
     val batchId: String,
     val name: String,
     val sourceTreeUri: Uri,
-    val children: List<FolderImporter.ChildFolder>
+    val children: List<FolderImporter.ChildFolder>,
+    /**
+     * true = 子项可能不是父树的直接子项（文件页里深进几层再选的情况）。
+     * 走 ContentResolver 递归收集，否则 importChild 会在父树直接子项里找不到而报「找不到子文件夹」。
+     */
+    val deep: Boolean = false
 )
 
 /**
@@ -136,7 +141,9 @@ private class QueueItem(
     val taskId: Long,
     val title: String,
     val uri: Uri?,
-    val key: String?
+    val key: String?,
+    /** 见 [BatchSpec.deep]：true 时用 ContentResolver 递归读，而不是父树直接子项 */
+    val deep: Boolean = false
 )
 
 /** 导出到相册的进度 */
@@ -176,7 +183,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
      * 防抖放在 ViewModel 而不是输入框，这样"清空搜索"也只是多等 250ms，不会漏掉刷新。
      */
     val query: StateFlow<String> = _queryInput
-        .debounce(250)
+        .debounce(300)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val books: StateFlow<List<Book>> = combine(
@@ -562,9 +569,36 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * v1.5.7：App 内文件页选中的若干文件夹，每个文件夹 = 一个批次（该文件夹内的图片就是一本书）。
+     *
+     * 和 [importFolders] 的区别：那里每个 uri 是「父目录」，里面每个子目录是一本；
+     * 这里每个 docId 是用户已经进到位的那一层目录本身，直接当一本书导。
+     * 因为 docId 可能不是根树的直接子项，必须带 [BatchSpec.deep]。
+     */
+    fun importDocs(rootTreeUri: Uri, docs: List<Pair<String, String>>) {
+        if (isBusy()) return
+        if (docs.isEmpty()) return
+        _batchRows.value = emptyList()
+        importJob = viewModelScope.launch {
+            val specs = docs.map { (docId, name) ->
+                BatchSpec(
+                    batchId = newBatchId(),
+                    name = name,
+                    sourceTreeUri = rootTreeUri,
+                    children = listOf(FolderImporter.ChildFolder(name, docId)),
+                    deep = true
+                )
+            }
+            _batchRows.value = specs.map {
+                BatchRow(it.batchId, it.name, it.children.size, 0, 0, 0, ImportBatch.QUEUED)
+            }
+            runBatches(specs)
+        }
+    }
+
     /** 顺序跑完整个批次队列；每批结束回写终态，批次之间互不影响 */
-    private suspend fun runBatches(specs: List<BatchSpec>) {
-        var importedTotal = 0
+    private suspend fun runBatches(specs: List<BatchSpec>) {        var importedTotal = 0
         var failedTotal = 0
         var skippedTotal = 0
         for (spec in specs) {
@@ -609,7 +643,8 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                     taskId = ids.getOrNull(index) ?: -1L,
                     title = child.name,
                     uri = spec.sourceTreeUri,
-                    key = child.key
+                    key = child.key,
+                    deep = spec.deep
                 )
             }
 
@@ -1057,7 +1092,7 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
 
                 val pages = try {
                     withContext(Dispatchers.IO) {
-                        FolderImporter.importChild(context, uri, childKey, dir) { done, total ->
+                        val progress: (Int, Int) -> Unit = { done, total ->
                             _importState.value = ImportUiState.Batch(
                                 index = index + 1,
                                 total = items.size,
@@ -1068,6 +1103,12 @@ class ShelfViewModel(application: Application) : AndroidViewModel(application) {
                                 paused = paused.value
                             )
                             ImportForegroundService.update("正在导入《${item.title}》 $done/$total")
+                        }
+                        if (item.deep) {
+                            // 文件页深进多层选的目录：docId 不是父树的直接子项，只能走 resolver
+                            FolderImporter.importDoc(context, uri, childKey, dir, progress)
+                        } else {
+                            FolderImporter.importChild(context, uri, childKey, dir, progress)
                         }
                     }
                 } catch (ce: CancellationException) {

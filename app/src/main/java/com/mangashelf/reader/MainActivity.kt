@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.mangashelf.reader.ui.FileBrowserScreen
 import com.mangashelf.reader.ui.PageManageScreen
 import com.mangashelf.reader.ui.ReaderScreen
 import com.mangashelf.reader.ui.ShelfScreen
@@ -34,7 +35,13 @@ class MainActivity : ComponentActivity() {
                 // -1 表示停留在书架；否则为正在阅读的书 id。用 saveable 保证旋转/重建后不丢。
                 var openBookId by rememberSaveable { mutableStateOf(NO_BOOK) }
                 var manageBookId by rememberSaveable { mutableStateOf(NO_BOOK) }
+                var browserOpen by rememberSaveable { mutableStateOf(false) }
                 when {
+                    browserOpen -> FileBrowserScreen(
+                        onBack = { browserOpen = false },
+                        onImport = { browserOpen = false }
+                    )
+
                     manageBookId != NO_BOOK -> PageManageScreen(
                         bookId = manageBookId,
                         onBack = { manageBookId = NO_BOOK }
@@ -49,6 +56,7 @@ class MainActivity : ComponentActivity() {
                     else -> ShelfScreen(
                         onOpenBook = { openBookId = it },
                         onManagePages = { manageBookId = it },
+                        onOpenBrowser = { browserOpen = true },
                         themeMode = themeMode,
                         onThemeChange = { mode ->
                             themeMode = mode
@@ -65,11 +73,16 @@ class MainActivity : ComponentActivity() {
      *
      * 只在阅读器把回调挂到 [PageKeyBus] 时才拦截，其余界面原样交还给系统调音量。
      * 返回 true 表示"这个按键我们消费掉了"，系统就不会再调音量。
+     *
+     * 用 onKeyDown 而不是 dispatchKeyEvent：后者在 ComponentActivity 里是 @RestrictTo 的，
+     * 覆写没问题，但 `super.dispatchKeyEvent(...)` 这一句会被 lint 判成 RestrictedApi 错误
+     * （v1.5.7 的 CI release job 就是因为这个红的）。音量键不会被上层先消费，
+     * onKeyDown 一样能收到，语义更干净。
      */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val turn = com.mangashelf.reader.ui.PageKeyBus.onTurn
-        if (turn != null && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-            when (event.keyCode) {
+        if (turn != null && event.repeatCount == 0) {
+            when (keyCode) {
                 // 往下按 = 往后翻，符合"往下按就是下一页"的直觉
                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
                     turn(true)
@@ -81,7 +94,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        return super.dispatchKeyEvent(event)
+        return super.onKeyDown(keyCode, event)
     }
 
     /**

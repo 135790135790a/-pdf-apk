@@ -8,3 +8,6 @@ captures/
 .externalNativeBuild/
 .cxx/
 local.properties
+
+# 安装包不进仓库，统一走 GitHub Releases
+*.apk

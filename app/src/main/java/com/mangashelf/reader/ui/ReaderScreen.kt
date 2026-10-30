@@ -1,7 +1,7 @@
 package com.mangashelf.reader.ui
 
-import android.app.Activity
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
@@ -54,12 +54,15 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -78,6 +81,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -113,13 +117,17 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
+import com.mangashelf.reader.data.EyeCarePrefs
+import com.mangashelf.reader.data.EyeCareState
+import com.mangashelf.reader.data.EyeLevel
+import com.mangashelf.reader.data.EyePolicy
 import com.mangashelf.reader.data.GalleryExporter
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 fun ReaderScreen(bookId: Long, onBack: () -> Unit, onManagePages: () -> Unit = {}) {
@@ -347,10 +355,26 @@ private fun ReaderContent(
         }
     }
 
+    // 护眼遮罩：只画不拦触摸，缩放/翻页手势照常。EyeCareState.version 变化时立刻重算。
+    var eyeMenuOpen by remember { mutableStateOf(false) }
+    val eyeVersion = EyeCareState.version
+    val eye = remember(eyeVersion) { EyeCarePrefs.load(imageContext) }
+    val eyeActive = eye.activeNow()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .then(
+                if (eyeActive) {
+                    Modifier.drawWithContent {
+                        drawContent()
+                        drawRect(color = Color(eye.level.color).copy(alpha = eye.level.alpha))
+                    }
+                } else {
+                    Modifier
+                }
+            )
     ) {
         val vertical = book.readMode == "VERTICAL"
         val pageContent: @Composable (Int) -> Unit = { index ->
@@ -446,6 +470,58 @@ private fun ReaderContent(
                         color = MaterialTheme.colorScheme.onBackground,
                         style = MaterialTheme.typography.labelLarge
                     )
+                }
+                // 护眼：开关 + 三档色温 + 三种策略（手动 / 定时 19-7 点 / 跟随系统深色）
+                Box {
+                    TextButton(onClick = { eyeMenuOpen = true }) {
+                        Text(
+                            text = if (eye.enabled) "护眼·${eye.level.label}" else "护眼",
+                            color = if (eye.enabled) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onBackground,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                    DropdownMenu(expanded = eyeMenuOpen, onDismissRequest = { eyeMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (eye.enabled) "关闭护眼" else "开启护眼") },
+                            onClick = {
+                                EyeCarePrefs.save(imageContext, eye.copy(enabled = !eye.enabled))
+                                eyeMenuOpen = false
+                            }
+                        )
+                        HorizontalDivider()
+                        EyeLevel.entries.forEach { level ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "色温：" + level.label +
+                                            if (eye.enabled && eye.level == level) "  ✓" else ""
+                                    )
+                                },
+                                onClick = {
+                                    EyeCarePrefs.save(imageContext, eye.copy(enabled = true, level = level))
+                                    eyeMenuOpen = false
+                                }
+                            )
+                        }
+                        HorizontalDivider()
+                        EyePolicy.entries.forEach { policy ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "策略：" + policy.label + when (policy) {
+                                            EyePolicy.TIMED -> "（${eye.fromHour}–${eye.toHour} 点）"
+                                            else -> ""
+                                        } + if (eye.policy == policy) "  ✓" else ""
+                                    )
+                                },
+                                onClick = {
+                                    EyeCarePrefs.save(imageContext, eye.copy(policy = policy))
+                                    eyeMenuOpen = false
+                                }
+                            )
+                        }
+                    }
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

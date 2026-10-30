@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      启动窗口主题：决定 App 冷启动那一瞬间（Compose 还没画第一帧）的底色。
+      启动窗口主题：决定 App 冷启动那一瞬间（Compose 还没画第一帧）的画面。
 
-      为什么分三个：启动窗口是系统画的，那时读不到 Compose 状态。之前固定 @android:color/black，
-      用户在 App 里选了「白天」，每次冷启动都会先闪一下黑。现在 MainActivity 在 super.onCreate
-      之前按已保存的主题 setTheme 到 Day / Night 其中一个，闪屏颜色就和进来之后的画面一致了。
+      三个主题：MainActivity 在 super.onCreate 之前按已保存的主题 setTheme 到 Day / Night，
+      启动图（底色 + 居中的 App 图标）就和进来之后的界面一致，不会先闪一下黑。
+      默认 Theme.MangaShelf 保持深色，给没有 setTheme 的公共路径兜底。
 
-      默认 Theme.MangaShelf 保持深色（夜晚底色），给没有 setTheme 的公共路径兜底。
+      图标用 drawable-nodpi/splash_logo.png（512×512，layer-list 里限制成 160dp 居中显示），
+      不引 androidx.core:core-splashscreen，避免给启动路径再增加一个依赖和初始化开销。
     -->
     <style name="Theme.MangaShelf" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/splash_bg_dark</item>
+        <item name="android:windowBackground">@drawable/launch_screen_night</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
@@ -18,13 +19,13 @@
 
     <!-- 白天：暖白底 + 深色状态栏图标 -->
     <style name="Theme.MangaShelf.Day" parent="Theme.MangaShelf">
-        <item name="android:windowBackground">@color/splash_bg_light</item>
+        <item name="android:windowBackground">@drawable/launch_screen_day</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 
     <!-- 夜晚：深灰底（#16161B，和 NightBackground 同色，不是纯黑） -->
     <style name="Theme.MangaShelf.Night" parent="Theme.MangaShelf">
-        <item name="android:windowBackground">@color/splash_bg_dark</item>
+        <item name="android:windowBackground">@drawable/launch_screen_night</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

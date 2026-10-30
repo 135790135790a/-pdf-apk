@@ -77,6 +77,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -97,11 +98,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.mangashelf.reader.MangaShelfApp
+import com.mangashelf.reader.data.AutoBackup
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.data.CoverQuality
 import com.mangashelf.reader.data.Diagnostics
 import com.mangashelf.reader.data.ImportSortPrefs
 import com.mangashelf.reader.data.PageSortMode
+import com.mangashelf.reader.data.SearchHistory
 import com.mangashelf.reader.ui.theme.ComicScrim
 import com.mangashelf.reader.ui.theme.ThemeMode
 import java.io.File
@@ -109,12 +112,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ShelfScreen(
     onOpenBook: (Long) -> Unit,
     onManagePages: (Long) -> Unit,
+    onOpenBrowser: () -> Unit,
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit
 ) {
@@ -152,6 +157,12 @@ fun ShelfScreen(
     // 搜索：点放大镜展开输入框，再点关闭收起。收起时清空关键词，书架恢复完整。
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var searchText by rememberSaveable { mutableStateOf("") }
+    // v1.5.7 需求三：搜索历史（最近 20 条，点一下就复用，可单条删除或清空）
+    var searchHistory by remember { mutableStateOf(SearchHistory.load(context)) }
+    var showHistoryMenu by remember { mutableStateOf(false) }
+    // v1.5.7 需求六：手动备份 / 恢复（自动备份每天一次，这里给用户一个立刻能按的按钮）
+    val backupScope = rememberCoroutineScope()
+    var backupMenu by remember { mutableStateOf(false) }
     val searchFocus = remember { FocusRequester() }
     var showSortMenu by remember { mutableStateOf(false) }
     var showLayoutMenu by remember { mutableStateOf(false) }
@@ -355,20 +366,70 @@ fun ShelfScreen(
             TopAppBar(
                 title = {
                     if (searchActive) {
-                        OutlinedTextField(
-                            value = searchText,
-                            onValueChange = {
-                                searchText = it
-                                viewModel.setQuery(it)
-                            },
-                            placeholder = { Text("搜索书名 / 作者 / 标签 / 文件夹") },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(end = 4.dp)
-                                .focusRequester(searchFocus)
-                        )
+                        Box {
+                            OutlinedTextField(
+                                value = searchText,
+                                onValueChange = {
+                                    searchText = it
+                                    viewModel.setQuery(it)
+                                    // 输满 2 个字才记历史，避免把单字也存一堆
+                                    if (it.length >= 2) SearchHistory.add(context, it)
+                                },
+                                placeholder = { Text("搜索书名 / 作者 / 标签 / 文件夹") },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge,
+                                trailingIcon = {
+                                    TextButton(onClick = {
+                                        searchHistory = SearchHistory.load(context)
+                                        showHistoryMenu = true
+                                    }) {
+                                        Text("历史", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(end = 4.dp)
+                                    .focusRequester(searchFocus)
+                            )
+                            DropdownMenu(
+                                expanded = showHistoryMenu,
+                                onDismissRequest = { showHistoryMenu = false }
+                            ) {
+                                if (searchHistory.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("还没有搜索记录") },
+                                        onClick = { showHistoryMenu = false }
+                                    )
+                                } else {
+                                    searchHistory.forEach { term ->
+                                        DropdownMenuItem(
+                                            text = { Text(term) },
+                                            onClick = {
+                                                searchText = term
+                                                viewModel.setQuery(term)
+                                                showHistoryMenu = false
+                                            },
+                                            trailingIcon = {
+                                                TextButton(onClick = {
+                                                    SearchHistory.remove(context, term)
+                                                    searchHistory = SearchHistory.load(context)
+                                                }) {
+                                                    Text("删", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                            }
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text("清空历史") },
+                                        onClick = {
+                                            SearchHistory.clear(context)
+                                            searchHistory = emptyList()
+                                            showHistoryMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     } else {
                         Text(
                             text = "漫画书架",
@@ -381,7 +442,10 @@ fun ShelfScreen(
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 ),
                 actions = {
-                    IconButton(onClick = { searchActive = !searchActive }) {
+                    IconButton(onClick = {
+                        if (searchActive && searchText.length >= 2) SearchHistory.add(context, searchText)
+                        searchActive = !searchActive
+                    }) {
                         Icon(
                             imageVector = if (searchActive) {
                                 Icons.Rounded.Close
@@ -390,6 +454,49 @@ fun ShelfScreen(
                             },
                             contentDescription = if (searchActive) "关闭搜索" else "搜索"
                         )
+                    }
+                    TextButton(onClick = onOpenBrowser) {
+                        Text("文件", color = MaterialTheme.colorScheme.onBackground)
+                    }
+                    Box {
+                        TextButton(onClick = { backupMenu = true }) {
+                            Text("备份", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(
+                            expanded = backupMenu,
+                            onDismissRequest = { backupMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("立即备份数据库") },
+                                onClick = {
+                                    backupMenu = false
+                                    backupScope.launch {
+                                        val f = AutoBackup.backupNow(context)
+                                        Toast.makeText(
+                                            context,
+                                            if (f == null) "备份失败（空间不足或数据库过大）" else "已备份：${f.name}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            )
+                            val backups = remember(backupMenu) { AutoBackup.list(context) }
+                            DropdownMenuItem(
+                                text = { Text(if (backups.isEmpty()) "暂无备份可恢复" else "从最近备份恢复（${backups.first().name}）") },
+                                enabled = backups.isNotEmpty(),
+                                onClick = {
+                                    backupMenu = false
+                                    backupScope.launch {
+                                        val ok = AutoBackup.restore(context, backups.first())
+                                        Toast.makeText(
+                                            context,
+                                            if (ok) "已恢复，请从后台划掉本 App 再重新打开" else "恢复失败",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            )
+                        }
                     }
                     Box {
                         TextButton(onClick = { showLayoutMenu = true }) {

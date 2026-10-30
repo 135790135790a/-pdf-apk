@@ -9,6 +9,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.memory.MemoryCache
 import com.mangashelf.reader.data.AppDatabase
+import com.mangashelf.reader.data.AutoBackup
 import com.mangashelf.reader.data.BookRepository
 import com.mangashelf.reader.data.ComicStorage
 import com.mangashelf.reader.data.StartupGuard
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -51,9 +53,13 @@ class MangaShelfApp : Application(), ImageLoaderFactory {
         // 两件事必须串行：先确认数据库可用，再决定要不要清残留目录。
         // 如果数据库损坏刚被重建，books 是空的，这时候清残留会把所有漫画目录删光。
         background.launch {
-            val repaired = healDatabaseIfCorrupt()
-            if (!repaired) cleanupOrphanFolders()
-            runCatching { repository.pruneTasks() }
+            // v1.5.7 需求六：关键路径都套超时——启动阶段最怕「卡住不动」，
+            // 宁可这一次不做，也不能让后台线程挂在那里吃掉进程。
+            val repaired = withTimeoutOrNull(20_000) { healDatabaseIfCorrupt() } ?: false
+            if (!repaired) withTimeoutOrNull(30_000) { cleanupOrphanFolders() }
+            runCatching { withTimeoutOrNull(15_000) { repository.pruneTasks() } }
+            // 每天最多一次自动备份，放在最后：前面几步都在抢救数据，不能被备份拖住。
+            runCatching { withTimeoutOrNull(60_000) { AutoBackup.maybeRun(this@MangaShelfApp) } }
         }
     }
 

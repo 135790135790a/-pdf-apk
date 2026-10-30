@@ -6,7 +6,7 @@
 
 | | |
 | :-- | :-- |
-| **最新版本** | v1.5.6（versionCode 17） |
+| **最新版本** | v1.5.7（versionCode 18） |
 | **安装包** | 6.98 MB · 直接覆盖安装，数据不丢 |
 | **系统要求** | Android 7.0+（minSdk 24），targetSdk 34 |
 | **技术栈** | Kotlin · Jetpack Compose (Material 3) · Room · Coil · PdfRenderer |
@@ -22,7 +22,7 @@
 
 ## 1. 功能清单
 
-### 批量导入与多选（v1.5.6 新增）
+### 批量导入与多选（v1.5.7 新增）
 
 | 能力 | 说明 |
 | --- | --- |
@@ -250,7 +250,7 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 
 ### 路 A：装 APK（已编译好，推荐）
 
-**`漫画书架-v1.5.6.apk`（约 6.9 MB）就在这个目录里**，直接装：
+**`漫画书架-v1.5.7.apk`（约 6.9 MB）就在这个目录里**，直接装：
 
 1. 手机「设置 → 安全」里允许安装未知来源应用（不同品牌位置略有差异，按提示授权即可）
 2. 把 APK 传到手机（数据线 / 微信文件传输 / QQ / 网盘都行）
@@ -263,7 +263,7 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.mangashelf.reader` |
-| 版本 | 1.5.6（versionCode 17） |
+| 版本 | 1.5.6（versionCode 18） |
 | 系统要求 | Android 7.0+（minSdk 24），targetSdk 34 |
 | 签名 | Android Debug 证书（个人自用没问题） |
 | 大小 | 7.06 MB（7,400,355 字节，release，未开 R8；见下方说明） |

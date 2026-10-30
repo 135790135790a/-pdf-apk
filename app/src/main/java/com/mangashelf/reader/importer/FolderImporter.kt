@@ -119,6 +119,42 @@ object FolderImporter {
 
         val found = ArrayList<Entry>(64)
         collect(dir, "", found, 0)
+        return materialize(context, found, destDir, onProgress)
+    }
+
+    /**
+     * 导入「已授权树内任意深度的一个目录」。
+     *
+     * 和 [importChild] 的区别：那个只能在父树的**直接子项**里找，
+     * 因为 DocumentFile 拿到子目录对象后就丢授权了。
+     * 这里改成先用 ContentResolver 递归把图片列出来（只看 docId，不需要子目录的授权），
+     * 再走同一套落盘逻辑，所以进到第三层、第五层都能导。
+     */
+    suspend fun importDoc(
+        context: Context,
+        rootTreeUri: Uri,
+        docId: String,
+        destDir: File,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): List<PageSource> = withContext(Dispatchers.IO) {
+        val found = ArrayList<Entry>(64)
+        collectViaResolver(context, rootTreeUri, docId, "", found, 0)
+        materialize(context, found, destDir, onProgress)
+    }
+
+    /**
+     * 把「收集到的图片」落盘成页文件。
+     *
+     * 收集有两条路子（DocumentFile / ContentResolver），落盘必须共用这一条：
+     * 编号、进度、异常文案只要有一处不一致，两类导入的行为就会分叉。
+     */
+    private suspend fun materialize(
+        context: Context,
+        found: List<Entry>,
+        destDir: File,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): List<PageSource> {
+        destDir.mkdirs()
         if (found.isEmpty()) {
             throw IllegalStateException("这个文件夹里没有图片（支持 jpg/png/webp/bmp/gif/avif/tif）")
         }
@@ -152,6 +188,67 @@ object FolderImporter {
             onProgress(index + 1, ordered.size)
         }
         if (out.isEmpty()) throw IllegalStateException("这个文件夹里的图片都读不出来")
+        return out
+    }
+
+    /** 用 ContentResolver 递归收集（不受「子目录没授权」限制，只看 docId） */
+    private suspend fun collectViaResolver(
+        context: Context,
+        rootTreeUri: Uri,
+        docId: String,
+        prefix: String,
+        out: MutableList<Entry>,
+        depth: Int
+    ) {
+        if (depth > MAX_DEPTH) return
+        var scanned = 0
+        for (node in childrenOf(context, rootTreeUri, docId)) {
+            if (++scanned % YIELD_EVERY_ENTRIES == 0) yield()
+            if (node.name.startsWith(".")) continue
+            if (node.dir) {
+                collectViaResolver(context, rootTreeUri, node.docId, "$prefix${node.name}/", out, depth + 1)
+            } else if (isImage(node.name)) {
+                out.add(
+                    Entry(
+                        path = "$prefix${node.name}",
+                        uri = DocumentsContract.buildDocumentUriUsingTree(rootTreeUri, node.docId),
+                        size = node.size,
+                        modified = node.modified
+                    )
+                )
+            }
+        }
+    }
+
+    private class Node(
+        val docId: String,
+        val name: String,
+        val dir: Boolean,
+        val size: Long,
+        val modified: Long
+    )
+
+    /** 列某个 docId 的直接子项。查不到（被删除/无权限）时返回空表，不抛。 */
+    private fun childrenOf(context: Context, rootTreeUri: Uri, docId: String): List<Node> {
+        val uri = DocumentsContract.buildChildDocumentsUriUsingTree(rootTreeUri, docId)
+        val cols = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
+        )
+        val out = ArrayList<Node>(32)
+        runCatching {
+            context.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue
+                    val name = c.getString(1) ?: continue
+                    val isDir = c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR
+                    out.add(Node(id, name, isDir, c.getLong(3), c.getLong(4)))
+                }
+            }
+        }
         return out
     }
 
