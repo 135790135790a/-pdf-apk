@@ -68,18 +68,55 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
 
-    var layout by remember { mutableStateOf(ShelfLayoutPrefs.load(context)) }
-    var coverQuality by remember { mutableStateOf(CoverPrefs.load(context)) }
-    var sensitivity by remember { mutableStateOf(PagePrefs.sensitivity(context)) }
-    var volumeKeys by remember { mutableStateOf(PagePrefs.volumeKeys(context)) }
-    var longPressTurn by remember { mutableStateOf(PagePrefs.longPressTurn(context)) }
-    var folderMode by remember { mutableStateOf(ImportSortPrefs.folderMode(context)) }
-    var folderAsc by remember { mutableStateOf(ImportSortPrefs.folderAsc(context)) }
-    var imageMode by remember { mutableStateOf(ImportSortPrefs.imageMode(context)) }
-    var imageAsc by remember { mutableStateOf(ImportSortPrefs.imageAsc(context)) }
-    var eyeHome by remember { mutableStateOf(EyeCarePrefs.load(context, EyeScope.HOME)) }
-    var eyeReader by remember { mutableStateOf(EyeCarePrefs.load(context, EyeScope.READER)) }
-    var searchCount by remember { mutableStateOf(SearchHistory.load(context).size) }
+    // v1.5.8：设置项一律 runCatching 兜底。SharedPreferences 本身几乎不抛，
+    // 但只要有人手动改过 prefs 或跨版本降级安装，类型对不上就是一次冷启动崩溃，
+    // 一个设置页不值得把整个 App 带走。
+    var layout by remember {
+        mutableStateOf(runCatching { ShelfLayoutPrefs.load(context) }.getOrDefault(ShelfLayout.GRID))
+    }
+    var coverQuality by remember {
+        mutableStateOf(runCatching { CoverPrefs.load(context) }.getOrDefault(CoverQuality.THUMB))
+    }
+    var sensitivity by remember {
+        mutableStateOf(
+            runCatching { PagePrefs.sensitivity(context) }.getOrDefault(PageSensitivity.MEDIUM)
+        )
+    }
+    var volumeKeys by remember {
+        mutableStateOf(runCatching { PagePrefs.volumeKeys(context) }.getOrDefault(true))
+    }
+    var longPressTurn by remember {
+        mutableStateOf(runCatching { PagePrefs.longPressTurn(context) }.getOrDefault(false))
+    }
+    var folderMode by remember {
+        mutableStateOf(
+            runCatching { ImportSortPrefs.folderMode(context) }.getOrDefault(PageSortMode.NATURAL)
+        )
+    }
+    var folderAsc by remember {
+        mutableStateOf(runCatching { ImportSortPrefs.folderAsc(context) }.getOrDefault(true))
+    }
+    var imageMode by remember {
+        mutableStateOf(
+            runCatching { ImportSortPrefs.imageMode(context) }.getOrDefault(PageSortMode.NATURAL)
+        )
+    }
+    var imageAsc by remember {
+        mutableStateOf(runCatching { ImportSortPrefs.imageAsc(context) }.getOrDefault(true))
+    }
+    var eyeHome by remember {
+        mutableStateOf(
+            runCatching { EyeCarePrefs.load(context, EyeScope.HOME) }.getOrDefault(EyeCarePrefs.State())
+        )
+    }
+    var eyeReader by remember {
+        mutableStateOf(
+            runCatching { EyeCarePrefs.load(context, EyeScope.READER) }.getOrDefault(EyeCarePrefs.State())
+        )
+    }
+    var searchCount by remember {
+        mutableStateOf(runCatching { SearchHistory.load(context).size }.getOrDefault(0))
+    }
     var lastBackup by remember { mutableStateOf(runCatching { AutoBackupProxy.lastName(context) }.getOrNull().orEmpty()) }
 
     var dialog by remember { mutableStateOf(SettingsDialog.NONE) }
