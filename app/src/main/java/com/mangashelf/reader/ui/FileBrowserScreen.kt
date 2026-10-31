@@ -1,7 +1,11 @@
 package com.mangashelf.reader.ui
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -95,6 +99,9 @@ fun FileBrowserScreen(
     val listState = rememberLazyListState()
     var sortMenuOpen by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+    var deleteConfirm by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
 
     val pickRoot = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.openRoot(uri)
@@ -187,6 +194,22 @@ fun FileBrowserScreen(
                             TextButton(onClick = { vm.selectAll() }) { Text("全选") }
                             TextButton(onClick = { vm.invertSelection() }) { Text("反选") }
                             TextButton(onClick = { vm.exitSelectMode() }) { Text("退出") }
+                            TextButton(onClick = { deleteConfirm = true }, enabled = selected.isNotEmpty()) {
+                                Text("删除")
+                            }
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        val (ok, fail) = vm.saveSelectedToGallery()
+                                        Toast.makeText(
+                                            ctx,
+                                            if (fail == 0) "已保存 $ok 张到相册" else "已保存 $ok 张，失败 $fail 张",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
+                                enabled = selected.isNotEmpty()
+                            ) { Text("相册") }
                             Spacer(Modifier.weight(1f))
                             TextButton(
                                 onClick = {
@@ -272,6 +295,29 @@ fun FileBrowserScreen(
                 }) { Text("开始导入") }
             },
             dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("取消") } }
+        )
+    }
+
+    // 删除确认（v1.5.8）：删的是源文件，不可恢复，必须二次确认
+    if (deleteConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { deleteConfirm = false },
+            title = { Text("删除 ${selected.size} 项？") },
+            text = { Text("会直接从原目录删除这些文件/文件夹，删除后无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteConfirm = false
+                    scope.launch {
+                        val (ok, fail) = vm.deleteSelected()
+                        Toast.makeText(
+                            ctx,
+                            if (fail == 0) "已删除 $ok 项" else "已删除 $ok 项，失败 $fail 项",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } }
         )
     }
 }

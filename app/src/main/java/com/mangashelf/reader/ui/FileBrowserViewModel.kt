@@ -1,7 +1,10 @@
 package com.mangashelf.reader.ui
 
 import android.app.Application
+import android.content.ContentValues
+import android.provider.MediaStore
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -232,6 +235,82 @@ class FileBrowserViewModel(app: Application) : AndroidViewModel(app) {
     /** 选中项的文件夹名，用于导入前的提示 */
     fun selectedNames(): List<String> =
         _items.value.filter { _selected.value.contains(it.docId) }.map { it.name }
+
+    /** 选中的全部条目（含文件），批量删除/存相册用 */
+    fun allSelected(): List<FileItem> =
+        _items.value.filter { _selected.value.contains(it.docId) }
+
+    /** 批量删除选中文档（v1.5.8）。返回 Pair(成功, 失败)。 */
+    suspend fun deleteSelected(): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        val root = _rootUri.value
+        val targets = allSelected()
+        if (root == null || targets.isEmpty()) return@withContext 0 to 0
+        val resolver = context.contentResolver
+        var ok = 0
+        var fail = 0
+        targets.forEach { item ->
+            val uri = DocumentsContract.buildDocumentUriUsingTree(root, item.docId)
+            val done = runCatching { DocumentsContract.deleteDocument(resolver, uri) }.getOrDefault(false)
+            if (done) ok++ else fail++
+        }
+        if (ok > 0) {
+            _selected.value = emptySet()
+            _selectMode.value = false
+            refresh()
+        }
+        ok to fail
+    }
+
+    /** 批量保存选中图片到系统相册（v1.5.8）。返回 Pair(成功, 失败)。 */
+    suspend fun saveSelectedToGallery(): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        val root = _rootUri.value
+        val targets = allSelected().filter { !it.isDir }
+        if (root == null || targets.isEmpty()) return@withContext 0 to 0
+        val resolver = context.contentResolver
+        var ok = 0
+        var fail = 0
+        targets.forEach { item ->
+            val src = DocumentsContract.buildDocumentUriUsingTree(root, item.docId)
+            val done = runCatching {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, item.name)
+                    put(MediaStore.Images.Media.MIME_TYPE, mimeOf(item.name))
+                    put(
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_PICTURES + "/漫画书架"
+                    )
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val target = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("插入相册失败")
+                resolver.openInputStream(src)?.use { input ->
+                    resolver.openOutputStream(target)?.use { output -> input.copyTo(output) }
+                        ?: throw IllegalStateException("写入相册失败")
+                } ?: throw IllegalStateException("读取源文件失败")
+                resolver.update(
+                    target,
+                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                    null,
+                    null,
+                )
+                true
+            }.getOrDefault(false)
+            if (done) ok++ else fail++
+        }
+        if (ok > 0) {
+            _selected.value = emptySet()
+            _selectMode.value = false
+        }
+        ok to fail
+    }
+
+    private fun mimeOf(name: String): String =
+        when (name.substringAfterLast('.', "").lowercase()) {
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            else -> "image/jpeg"
+        }
 
     // ---------- 列目录 ----------
 

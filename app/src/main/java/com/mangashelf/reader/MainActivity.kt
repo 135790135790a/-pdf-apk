@@ -6,16 +6,22 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import com.mangashelf.reader.data.EyeScope
 import com.mangashelf.reader.ui.FileBrowserScreen
 import com.mangashelf.reader.ui.PageManageScreen
 import com.mangashelf.reader.ui.ReaderScreen
 import com.mangashelf.reader.ui.ShelfScreen
+import com.mangashelf.reader.ui.eyeCare
+import com.mangashelf.reader.ui.rememberEyeState
 import com.mangashelf.reader.ui.theme.MangaShelfTheme
 import com.mangashelf.reader.ui.theme.ThemeMode
 
@@ -53,16 +59,22 @@ class MainActivity : ComponentActivity() {
                         onManagePages = { manageBookId = openBookId }
                     )
 
-                    else -> ShelfScreen(
-                        onOpenBook = { openBookId = it },
-                        onManagePages = { manageBookId = it },
-                        onOpenBrowser = { browserOpen = true },
-                        themeMode = themeMode,
-                        onThemeChange = { mode ->
-                            themeMode = mode
-                            ThemeMode.save(context, mode)
+                    else -> {
+                        // v1.5.8：书架也支持护眼叠加（阅读器有自己的那层，互不干扰）
+                        val eyeHome = rememberEyeState(EyeScope.HOME)
+                        Box(Modifier.fillMaxSize().eyeCare(eyeHome)) {
+                            ShelfScreen(
+                                onOpenBook = { openBookId = it },
+                                onManagePages = { manageBookId = it },
+                                onOpenBrowser = { browserOpen = true },
+                                themeMode = themeMode,
+                                onThemeChange = { mode ->
+                                    themeMode = mode
+                                    ThemeMode.save(context, mode)
+                                }
+                            )
                         }
-                    )
+                    }
                 }
             }
         }

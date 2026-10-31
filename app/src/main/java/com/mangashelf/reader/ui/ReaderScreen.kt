@@ -119,6 +119,7 @@ import com.mangashelf.reader.MangaShelfApp
 import com.mangashelf.reader.data.Book
 import com.mangashelf.reader.data.EyeCarePrefs
 import com.mangashelf.reader.data.EyeCareState
+import com.mangashelf.reader.data.EyeScope
 import com.mangashelf.reader.data.EyeLevel
 import com.mangashelf.reader.data.EyePolicy
 import com.mangashelf.reader.data.GalleryExporter
@@ -485,7 +486,7 @@ private fun ReaderContent(
                         DropdownMenuItem(
                             text = { Text(if (eye.enabled) "关闭护眼" else "开启护眼") },
                             onClick = {
-                                EyeCarePrefs.save(imageContext, eye.copy(enabled = !eye.enabled))
+                                EyeCarePrefs.save(imageContext, EyeScope.READER, eye.copy(enabled = !eye.enabled))
                                 eyeMenuOpen = false
                             }
                         )
@@ -499,7 +500,7 @@ private fun ReaderContent(
                                     )
                                 },
                                 onClick = {
-                                    EyeCarePrefs.save(imageContext, eye.copy(enabled = true, level = level))
+                                    EyeCarePrefs.save(imageContext, EyeScope.READER, eye.copy(enabled = true, level = level))
                                     eyeMenuOpen = false
                                 }
                             )
@@ -516,7 +517,7 @@ private fun ReaderContent(
                                     )
                                 },
                                 onClick = {
-                                    EyeCarePrefs.save(imageContext, eye.copy(policy = policy))
+                                    EyeCarePrefs.save(imageContext, EyeScope.READER, eye.copy(policy = policy))
                                     eyeMenuOpen = false
                                 }
                             )

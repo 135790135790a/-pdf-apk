@@ -305,6 +305,9 @@ fun ShelfScreen(
     var showHistoryPage by rememberSaveable { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
+    // v1.5.8：设置页与独立搜索页（原来这些开关挤在顶栏，屏幕一窄就看不见）
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var searchPageOpen by rememberSaveable { mutableStateOf(false) }
 
     val backupState by viewModel.backupState.collectAsStateWithLifecycle()
     val backupCreate = rememberLauncherForActivityResult(
@@ -350,6 +353,96 @@ fun ShelfScreen(
     }
 
     // v1.5.6：导入历史做成独立整页，饼图要有地方画
+    // ---------- v1.5.8：设置页 ----------
+    if (settingsOpen) {
+        SettingsScreen(
+            themeMode = themeMode,
+            onThemeChange = onThemeChange,
+            onBack = { settingsOpen = false },
+            onBackupNow = {
+                backupScope.launch {
+                    val f = AutoBackup.backupNow(context)
+                    Toast.makeText(
+                        context,
+                        if (f == null) "备份失败（空间不足或数据库过大）" else "已备份：${f.name}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            },
+            onRestoreLocal = {
+                backupScope.launch {
+                    val latest = AutoBackup.list(context).firstOrNull()
+                    if (latest == null) {
+                        Toast.makeText(context, "还没有可恢复的备份", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val ok = AutoBackup.restore(context, latest)
+                        Toast.makeText(
+                            context,
+                            if (ok) "已恢复，请从后台划掉本 App 再重新打开" else "恢复失败",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            },
+            onExportZip = {
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                backupCreate.launch("漫画书架备份-$stamp.zip")
+            },
+            onImportZip = { backupOpen.launch(arrayOf("*/*")) },
+            onOpenQueue = {
+                settingsOpen = false
+                showQueue = true
+            },
+            onOpenHistory = {
+                settingsOpen = false
+                showHistoryPage = true
+            }
+        )
+        return
+    }
+
+    // ---------- v1.5.8：独立搜索页 ----------
+    if (searchPageOpen) {
+        // 热门标签：书架里出现次数最多的作者/标签，最多 12 个
+        val hotTags = remember(books) {
+            books.asSequence()
+                .flatMap { b ->
+                    sequenceOf(b.author) + b.tags.split(' ', ',', '，', '、', '/').asSequence()
+                }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it.length <= 12 }
+                .groupingBy { it }
+                .eachCount()
+                .entries
+                .sortedByDescending { it.value }
+                .take(12)
+                .map { it.key }
+        }
+        SearchScreen(
+            query = searchText,
+            onQueryChange = {
+                searchText = it
+                viewModel.setQuery(it)
+                if (it.length >= 2) SearchHistory.add(context, it)
+            },
+            results = books,
+            covers = covers,
+            history = searchHistory,
+            hotTags = hotTags,
+            onDeleteHistory = { searchHistory = SearchHistory.remove(context, it) },
+            onClearHistory = {
+                SearchHistory.clear(context)
+                searchHistory = emptyList()
+            },
+            onOpenBook = {
+                searchPageOpen = false
+                onOpenBook(it)
+            },
+            onBack = { searchPageOpen = false }
+        )
+        return
+    }
+
     if (showHistoryPage) {
         BatchHistoryScreen(
             batches = batchHistory,
@@ -442,241 +535,14 @@ fun ShelfScreen(
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 ),
                 actions = {
-                    IconButton(onClick = {
-                        if (searchActive && searchText.length >= 2) SearchHistory.add(context, searchText)
-                        searchActive = !searchActive
-                    }) {
-                        Icon(
-                            imageVector = if (searchActive) {
-                                Icons.Rounded.Close
-                            } else {
-                                Icons.Rounded.Search
-                            },
-                            contentDescription = if (searchActive) "关闭搜索" else "搜索"
-                        )
+                    IconButton(onClick = { searchPageOpen = true }) {
+                        Icon(Icons.Rounded.Search, contentDescription = "搜索")
                     }
                     TextButton(onClick = onOpenBrowser) {
                         Text("文件", color = MaterialTheme.colorScheme.onBackground)
                     }
-                    Box {
-                        TextButton(onClick = { backupMenu = true }) {
-                            Text("备份", color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(
-                            expanded = backupMenu,
-                            onDismissRequest = { backupMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("立即备份数据库") },
-                                onClick = {
-                                    backupMenu = false
-                                    backupScope.launch {
-                                        val f = AutoBackup.backupNow(context)
-                                        Toast.makeText(
-                                            context,
-                                            if (f == null) "备份失败（空间不足或数据库过大）" else "已备份：${f.name}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            )
-                            val backups = remember(backupMenu) { AutoBackup.list(context) }
-                            DropdownMenuItem(
-                                text = { Text(if (backups.isEmpty()) "暂无备份可恢复" else "从最近备份恢复（${backups.first().name}）") },
-                                enabled = backups.isNotEmpty(),
-                                onClick = {
-                                    backupMenu = false
-                                    backupScope.launch {
-                                        val ok = AutoBackup.restore(context, backups.first())
-                                        Toast.makeText(
-                                            context,
-                                            if (ok) "已恢复，请从后台划掉本 App 再重新打开" else "恢复失败",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    Box {
-                        TextButton(onClick = { showLayoutMenu = true }) {
-                            Text(layout.label, color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(
-                            expanded = showLayoutMenu,
-                            onDismissRequest = { showLayoutMenu = false }
-                        ) {
-                            ShelfLayout.entries.forEach { option ->
-                                val selected = option == layout
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = option.label,
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
-                                        )
-                                    },
-                                    leadingIcon = if (selected) {
-                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        layout = option
-                                        ShelfLayoutPrefs.save(context, option)
-                                        showLayoutMenu = false
-                                    }
-                                )
-                            }
-                            HorizontalDivider()
-                            CoverQuality.entries.forEach { quality ->
-                                val selected = quality == coverQuality
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = "封面：" + quality.label,
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
-                                        )
-                                    },
-                                    leadingIcon = if (selected) {
-                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        viewModel.setCoverQuality(quality)
-                                        showLayoutMenu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Box {
-                        TextButton(onClick = { showSortMenu = true }) {
-                            Text("排序", color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            ShelfSort.entries.forEach { sort ->
-                                val selected = order.sort == sort
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = sort.label + if (selected) {
-                                                if (order.asc) "  ↑ 正序" else "  ↓ 倒序"
-                                            } else {
-                                                ""
-                                            },
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
-                                        )
-                                    },
-                                    leadingIcon = if (selected) {
-                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        viewModel.setSort(sort)
-                                        showSortMenu = false
-                                    }
-                                )
-                            }
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("只切换正序 / 倒序") },
-                                onClick = {
-                                    viewModel.setSort(order.sort)
-                                    showSortMenu = false
-                                }
-                            )
-                        }
-                    }
-                    // 主题切换：白天 / 夜晚 / 跟随系统
-                    Box {
-                        TextButton(onClick = { showThemeMenu = true }) {
-                            Text("主题", color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(
-                            expanded = showThemeMenu,
-                            onDismissRequest = { showThemeMenu = false }
-                        ) {
-                            ThemeMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = { Text(mode.label) },
-                                    leadingIcon = if (themeMode == mode) {
-                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        onThemeChange(mode)
-                                        showThemeMenu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    // 导入默认排序（文件夹 / 图片分开设置）
-                    TextButton(onClick = { showImportSortSettings = true }) {
-                        Text("导入排序", color = MaterialTheme.colorScheme.onBackground)
-                    }
-                    // v1.5.6：批次队列与导入历史
-                    TextButton(onClick = { showQueue = true }) {
-                        Text(
-                            text = if (batchRows.isEmpty()) {
-                                "队列"
-                            } else {
-                                "队列 ${batchRows.count { it.finished }}/${batchRows.size}"
-                            },
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                    }
-                    TextButton(onClick = { showHistoryPage = true }) {
-                        Text("导入历史", color = MaterialTheme.colorScheme.onBackground)
-                    }
-                    // v1.5.6：进入多选，底部会出现批量操作栏
-                    TextButton(onClick = { viewModel.enterSelectMode() }) {
-                        Text("选择", color = MaterialTheme.colorScheme.onBackground)
-                    }
-                    // 整库备份 / 恢复（含图片）
-                    Box {
-                        TextButton(onClick = { showBackupMenu = true }) {
-                            Text("备份", color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(
-                            expanded = showBackupMenu,
-                            onDismissRequest = { showBackupMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("导出备份（含图片）") },
-                                onClick = {
-                                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)
-                                        .format(Date())
-                                    backupCreate.launch("漫画书架备份-$stamp.zip")
-                                    showBackupMenu = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("从备份恢复") },
-                                onClick = {
-                                    backupOpen.launch(arrayOf("*/*"))
-                                    showBackupMenu = false
-                                }
-                            )
-                        }
+                    TextButton(onClick = { settingsOpen = true }) {
+                        Text("设置", color = MaterialTheme.colorScheme.onBackground)
                     }
                 }
             )

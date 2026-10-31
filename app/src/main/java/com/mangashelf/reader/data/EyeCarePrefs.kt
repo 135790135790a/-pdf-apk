@@ -18,10 +18,18 @@ enum class EyePolicy(val label: String) {
 }
 
 /**
- * 阅读器护眼模式的配置（v1.5.7）。
+ * 护眼作用范围（v1.5.8）。
  *
- * 只影响阅读器，不影响书架/搜索/设置——用户没要求全局，
- * 全局变色会让缩略图颜色失真、选书时误判封面。
+ * 主页和阅读器分开存：看书时想把画面压黄，不代表翻书架时也愿意看一片黄。
+ * READER 的键位保持 v1.5.7 的老名字（`eye_*`），升级后老配置直接继续生效。
+ */
+enum class EyeScope(val keyPrefix: String) {
+    HOME("eye_home_"),
+    READER("eye_"),
+}
+
+/**
+ * 护眼模式的配置。
  *
  * 定时策略故意用「时段」而不是真实的日出日落：
  * 后者要定位权限，为了一个调色功能去要位置权限不值得。
@@ -29,11 +37,6 @@ enum class EyePolicy(val label: String) {
 object EyeCarePrefs {
 
     private const val PREFS = "reader_prefs"
-    private const val KEY_ENABLED = "eye_enabled"
-    private const val KEY_LEVEL = "eye_level"
-    private const val KEY_POLICY = "eye_policy"
-    private const val KEY_FROM = "eye_from"
-    private const val KEY_TO = "eye_to"
 
     data class State(
         val enabled: Boolean = false,
@@ -52,31 +55,53 @@ object EyeCarePrefs {
                     else hour >= fromHour || hour < toHour
             }
         }
+
+        /** 设置页/工具栏上显示的一行摘要 */
+        fun summary(): String =
+            if (!enabled) "关" else "${level.label} · ${policy.label}"
     }
 
-    fun load(context: Context): State {
+    private fun key(scope: EyeScope, name: String): String = scope.keyPrefix + name
+
+    fun load(context: Context, scope: EyeScope = EyeScope.READER): State {
         val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        fun s(n: String) = p.getString(key(scope, n), null)
+        fun b(n: String) = p.getBoolean(key(scope, n), false)
+        fun i(n: String, d: Int) = p.getInt(key(scope, n), d)
         return State(
-            enabled = p.getBoolean(KEY_ENABLED, false),
-            level = EyeLevel.entries.firstOrNull { it.name == p.getString(KEY_LEVEL, null) }
-                ?: EyeLevel.WARM,
-            policy = EyePolicy.entries.firstOrNull { it.name == p.getString(KEY_POLICY, null) }
-                ?: EyePolicy.MANUAL,
-            fromHour = p.getInt(KEY_FROM, 19),
-            toHour = p.getInt(KEY_TO, 7),
+            enabled = b("enabled"),
+            level = EyeLevel.entries.firstOrNull { it.name == s("level") } ?: EyeLevel.WARM,
+            policy = EyePolicy.entries.firstOrNull { it.name == s("policy") } ?: EyePolicy.MANUAL,
+            fromHour = i("from", 19),
+            toHour = i("to", 7),
         )
     }
 
-    fun save(context: Context, state: State) {
+    fun save(context: Context, scope: EyeScope, state: State) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean(KEY_ENABLED, state.enabled)
-            .putString(KEY_LEVEL, state.level.name)
-            .putString(KEY_POLICY, state.policy.name)
-            .putInt(KEY_FROM, state.fromHour)
-            .putInt(KEY_TO, state.toHour)
+            .putBoolean(key(scope, "enabled"), state.enabled)
+            .putString(key(scope, "level"), state.level.name)
+            .putString(key(scope, "policy"), state.policy.name)
+            .putInt(key(scope, "from"), state.fromHour)
+            .putInt(key(scope, "to"), state.toHour)
             .apply()
-        // 阅读器那层遮罩靠这个版本号重组：对话框改完立刻生效，不用退出重进
+        // 遮罩靠这个版本号重组：对话框改完立刻生效，不用退出重进
+        EyeCareState.version++
+    }
+
+    /** 恢复默认：把两个范围都关掉 */
+    fun resetAll(context: Context) {
+        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val e = p.edit()
+        EyeScope.entries.forEach { scope ->
+            e.remove(key(scope, "enabled"))
+            e.remove(key(scope, "level"))
+            e.remove(key(scope, "policy"))
+            e.remove(key(scope, "from"))
+            e.remove(key(scope, "to"))
+        }
+        e.apply()
         EyeCareState.version++
     }
 }
